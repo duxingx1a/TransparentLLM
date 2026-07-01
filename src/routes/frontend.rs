@@ -12,7 +12,10 @@ pub fn frontend_routes() -> Router<Arc<AppState>> {
         .unwrap_or_else(|_| "./frontend/out".into());
 
     Router::new().fallback_service(
-        get_service(ServeDir::new(&frontend_dir))
+        get_service(
+            ServeDir::new(&frontend_dir)
+                .append_index_html_on_directories(true)
+        )
             .handle_error(|_err| async { (axum::http::StatusCode::NOT_FOUND, "Not Found") }),
     )
 }
