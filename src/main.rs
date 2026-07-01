@@ -68,7 +68,7 @@ async fn main() -> anyhow::Result<()> {
     // 组装路由
     let app = Router::new()
         .merge(routes::health::health_route())
-        .merge(routes::frontend::frontend_routes())
+        .nest("/ui", routes::frontend::frontend_routes())
         .merge(routes::proxy::proxy_routes())
         .merge(routes::management::management_routes())
         .layer(
