@@ -3,20 +3,21 @@ services:
     build: .
     container_name: transparentllm
     ports:
-      - "14000:14000"
+      - "18400:18400"
     volumes:
       # 持久化 SQLite 数据
       - ./data:/app/data
     environment:
       # ⚠️ 部署前务必修改为你的 32 字节密钥！
       - TRANSPARENTLLM_ENCRYPTION_KEY=change-me-to-32-byte-secret-key!!
-      - TRANSPARENTLLM_PORT=14000
+      - TRANSPARENTLLM_HOST=0.0.0.0
+      - TRANSPARENTLLM_PORT=18400
       - TRANSPARENTLLM_DATABASE_PATH=sqlite:/app/data/transparentllm.db?mode=rwc
       - TRANSPARENTLLM_FRONTEND_DIR=/app/frontend/out
       - TRANSPARENTLLM_LOG_RETENTION_DAYS=30
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:14000/health"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:18400/health"]
       interval: 30s
       timeout: 5s
       retries: 3
