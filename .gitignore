@@ -1,0 +1,27 @@
+# TransparentLLM
+
+## 忽略构建产物
+/target/
+/node_modules/
+/.next/
+/out/
+
+## 忽略运行时数据
+/data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+## 忽略环境文件
+.env
+.env.local
+
+## 忽略 IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+## 临时垃圾桶
+.trash_safe/

@@ -1,0 +1,45 @@
+[package]
+name = "transparentllm"
+version = "0.1.0"
+edition = "2021"
+description = "个人版 LLM 代理网关 — 透明转发、用量记录、管理面板"
+
+[dependencies]
+# Web 框架
+axum = { version = "0.7", features = ["macros"] }
+tower = { version = "0.4", features = ["util"] }
+tower-http = { version = "0.5", features = ["fs", "cors", "trace"] }
+# 异步运行时
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal"] }
+# 序列化
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+# 数据库
+sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "sqlite", "chrono", "uuid", "json"] }
+# HTTP 客户端
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "http2", "stream"] }
+# 加密
+aes-gcm = "0.10"
+sha2 = "0.10"
+hex = "0.4"
+base64 = "0.22"
+rand = "0.8"
+subtle = "2"
+# 时间
+chrono = { version = "0.4", features = ["serde"] }
+# 异步流
+futures-util = "0.3"
+# 唯一 ID
+uuid = { version = "1", features = ["v4"] }
+# 追踪/日志
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# 错误处理
+thiserror = "1"
+anyhow = "1"
+
+[profile.release]
+opt-level = 2
+lto = true
+codegen-units = 1
+strip = true

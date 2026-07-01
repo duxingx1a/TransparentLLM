@@ -1,0 +1,195 @@
+// TransparentLLM 前端类型定义
+
+// ========== 模型相关 ==========
+
+/** 模型配置 */
+export interface ModelConfig {
+  id: string;
+  model_name: string;
+  provider: "openai" | "anthropic" | "custom";
+  api_base: string;
+  api_key_masked: string;
+  input_price: number;
+  output_price: number;
+  model_type: "chat" | "embedding" | "image" | "audio";
+  created_at: string;
+  updated_at: string;
+}
+
+/** 创建/更新模型请求 */
+export interface ModelFormData {
+  model_name: string;
+  provider: string;
+  api_base: string;
+  api_key: string;
+  input_price?: number;
+  output_price?: number;
+  model_type?: string;
+}
+
+// ========== 日志相关 ==========
+
+/** 请求日志（列表项） */
+export interface RequestLogItem {
+  id: string;
+  model_name: string;
+  provider: string;
+  source_tag: string;
+  start_time: string;
+  end_time: string;
+  completion_start_time?: string | null;
+  duration_ms: number;
+  total_tokens: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cache_hit: string | null;
+  spend: number;
+  status: "success" | "error";
+}
+
+/** 请求日志详情 */
+export interface RequestLogDetail extends RequestLogItem {
+  api_base: string;
+  completion_start_time: string | null;
+  cache_key: string | null;
+  messages: ChatMessage[] | null;
+  response_text: string | null;
+  error_msg: string | null;
+  created_at: string;
+}
+
+/** 聊天消息 */
+export interface ChatMessage {
+  role: "system" | "user" | "assistant";
+  content: string;
+}
+
+/** 日志列表请求参数 */
+export interface LogQueryParams {
+  page?: number;
+  size?: number;
+  model?: string;
+  source?: string;
+  status?: string;
+  from?: string;
+  to?: string;
+}
+
+/** 分页信息 */
+export interface Pagination {
+  page: number;
+  size: number;
+  total: number;
+  total_pages: number;
+}
+
+/** 日志列表响应 */
+export interface LogListResponse {
+  logs: RequestLogItem[];
+  pagination: Pagination;
+}
+
+// ========== 统计相关 ==========
+
+/** 仪表盘概览 */
+export interface DashboardOverview {
+  today: {
+    total_requests: number;
+    total_tokens: number;
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    cache_tokens?: number;
+    total_spend: number;
+  };
+  total: {
+    total_requests: number;
+    total_tokens: number;
+    total_spend: number;
+  };
+  top_models: Array<{
+    model_name: string;
+    requests: number;
+    tokens: number;
+    spend: number;
+  }>;
+  top_sources: Array<{
+    source_tag: string;
+    requests: number;
+    tokens: number;
+  }>;
+  daily_trend: Array<{
+    date: string;
+    requests: number;
+    tokens: number;
+    spend: number;
+  }>;
+}
+
+/** 每日统计 */
+export interface DailyStat {
+  date: string;
+  model_name: string;
+  source_tag: string;
+  total_requests: number;
+  total_tokens: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cache_hits: number;
+  total_spend: number;
+}
+
+// ========== Playground 相关 ==========
+
+/** Playground 请求体 */
+export interface PlaygroundRequest {
+  message: string;
+  stream: boolean;
+}
+
+/** Playground 非流式响应 */
+export interface PlaygroundResponse {
+  success: boolean;
+  content?: string;
+  total_tokens?: number;
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  duration_ms?: number;
+  error?: string;
+}
+
+// ========== 设置相关 ==========
+
+/** 系统设置 */
+export interface AppSettings {
+  log_retention_days: number;
+  version: string;
+}
+
+/** 更新设置请求 */
+export interface UpdateSettingsRequest {
+  log_retention_days?: number;
+  master_key?: string;
+  old_master_key?: string;
+}
+
+// ========== 来源标签 ==========
+
+/** 来源标签 */
+export interface SourceTag {
+  tag: string;
+  requests: number;
+  last_seen: string;
+}
+
+// ========== 通用 API 响应 ==========
+
+/** 通用成功响应 */
+export interface ApiSuccess {
+  success: boolean;
+  message?: string;
+}
+
+/** 通用错误响应 */
+export interface ApiError {
+  error: string;
+}
