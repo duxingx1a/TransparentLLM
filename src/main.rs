@@ -70,7 +70,7 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/", axum::routing::get(|| async { Redirect::permanent("/ui/") }))
         .merge(routes::health::health_route())
-        .nest("/ui", routes::frontend::frontend_routes())
+        .merge(routes::frontend::frontend_routes_ui())
         .merge(routes::proxy::proxy_routes())
         .merge(routes::management::management_routes())
         .layer(
