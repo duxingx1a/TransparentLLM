@@ -1,6 +1,6 @@
 services:
   transparentllm:
-    build: .
+    image: transparentllm:latest
     container_name: transparentllm
     ports:
       - "18400:18400"

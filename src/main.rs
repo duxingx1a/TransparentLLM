@@ -18,8 +18,9 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::Router;
-use sqlx::sqlite::SqlitePoolOptions;
+use axum::response::Redirect;
 use tower_http::cors::CorsLayer;
+use sqlx::sqlite::SqlitePoolOptions;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 use crate::auth::AuthState;
@@ -67,6 +68,7 @@ async fn main() -> anyhow::Result<()> {
 
     // 组装路由
     let app = Router::new()
+        .route("/", axum::routing::get(|| async { Redirect::permanent("/ui/") }))
         .merge(routes::health::health_route())
         .nest("/ui", routes::frontend::frontend_routes())
         .merge(routes::proxy::proxy_routes())
