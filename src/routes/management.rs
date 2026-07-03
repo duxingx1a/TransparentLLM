@@ -9,7 +9,7 @@ use axum::{
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
-    routing::{delete, get, post, put},
+    routing::{get, post},
     Json,
 };
 use serde::{Deserialize, Serialize};
@@ -29,6 +29,13 @@ pub fn management_routes() -> Router<Arc<AppState>> {
             get(get_model).put(update_model).delete(delete_model),
         )
         .route("/api/models/:id/test", post(test_model))
+        // 提供商管理
+        .route("/api/providers", get(list_providers).post(create_provider))
+        .route(
+            "/api/providers/:id",
+            get(get_provider).put(update_provider).delete(delete_provider),
+        )
+        .route("/api/providers/:id/models", get(get_provider_models))
         // Playground
         .route("/api/playground/chat", post(playground_chat))
         .route("/api/playground/endpoints", get(playground_endpoints))
@@ -51,9 +58,27 @@ struct ModelListResponse {
     models: Vec<crate::models::ModelConfig>,
 }
 
-async fn list_models(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+async fn list_models(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(resp) = crate::auth::middleware::check_auth(&state, &headers) {
+        return resp;
+    }
     match crate::models::list_models(&state.db).await {
-        Ok(models) => Json(ModelListResponse { models }).into_response(),
+        Ok(mut models) => {
+            // 解密每个模型的 api_key 供前端展示
+            for model in &mut models {
+                if !model.encrypted_api_key.is_empty() {
+                    model.decrypted_api_key = crate::models::decrypt_api_key(
+                        &model.encrypted_api_key,
+                        &state.config.encryption_key,
+                    )
+                    .unwrap_or_default();
+                }
+            }
+            Json(ModelListResponse { models }).into_response()
+        }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": e.to_string()})),
@@ -64,10 +89,23 @@ async fn list_models(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 
 async fn get_model(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if let Err(resp) = crate::auth::middleware::check_auth(&state, &headers) {
+        return resp;
+    }
     match crate::models::get_model(&state.db, &id).await {
-        Ok(Some(model)) => Json(model).into_response(),
+        Ok(Some(mut model)) => {
+            if !model.encrypted_api_key.is_empty() {
+                model.decrypted_api_key = crate::models::decrypt_api_key(
+                    &model.encrypted_api_key,
+                    &state.config.encryption_key,
+                )
+                .unwrap_or_default();
+            }
+            Json(model).into_response()
+        }
         Ok(None) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "模型不存在"})),
@@ -221,13 +259,19 @@ struct PlaygroundRequest {
 fn default_endpoint_type() -> String { "chat".into() }
 
 /// GET /api/playground/endpoints — 可用端点列表
-async fn playground_endpoints() -> impl IntoResponse {
+async fn playground_endpoints(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(resp) = crate::auth::middleware::check_auth(&state, &headers) {
+        return resp;
+    }
     Json(serde_json::json!([
         {"id": "chat", "name": "对话补全", "path": "/v1/chat/completions"},
         {"id": "embedding", "name": "文本嵌入", "path": "/v1/embeddings"},
         {"id": "image", "name": "图像生成", "path": "/v1/images/generations"},
         {"id": "audio", "name": "音频转录", "path": "/v1/audio/transcriptions"},
-    ]))
+    ])).into_response().into_response()
 }
 
 /// POST /api/playground/chat — Playground 对话
@@ -413,8 +457,12 @@ struct LogRow {
 /// GET /api/logs — 请求日志列表（分页+筛选）
 async fn list_logs(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Query(params): Query<LogQueryParams>,
 ) -> impl IntoResponse {
+    if let Err(resp) = crate::auth::middleware::check_auth(&state, &headers) {
+        return resp;
+    }
     let page = params.page.max(1);
     let page_size = params.page_size.min(100).max(1);
     let offset = ((page - 1) * page_size) as i64;
@@ -590,7 +638,11 @@ struct StatsRow {
 /// 返回：今日统计、总计统计、按模型分组、按来源分组、每日趋势
 async fn get_stats_overview(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
 ) -> impl IntoResponse {
+    if let Err(resp) = crate::auth::middleware::check_auth(&state, &headers) {
+        return resp;
+    }
     let db = &state.db;
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
 
@@ -718,8 +770,12 @@ async fn get_stats_overview(
 /// 查询参数：from, to, model, source（全部可选）
 async fn get_stats_daily(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Query(params): Query<StatsQueryParams>,
 ) -> impl IntoResponse {
+    if let Err(resp) = crate::auth::middleware::check_auth(&state, &headers) {
+        return resp;
+    }
     let db = &state.db;
     let days = params.days.min(365); // 最多 365 天
 
@@ -763,7 +819,11 @@ struct SourceTagRow {
 
 async fn get_source_tags(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
 ) -> impl IntoResponse {
+    if let Err(resp) = crate::auth::middleware::check_auth(&state, &headers) {
+        return resp;
+    }
     let tags: Vec<SourceTagRow> = sqlx::query_as(
         "SELECT source_tag, COUNT(*) as cnt, MAX(created_at) as last_seen \
          FROM request_logs GROUP BY source_tag ORDER BY cnt DESC"
@@ -797,7 +857,11 @@ struct UpdateSettingsRequest {
 
 async fn get_settings(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
 ) -> impl IntoResponse {
+    if let Err(resp) = crate::auth::middleware::check_auth(&state, &headers) {
+        return resp;
+    }
     Json(serde_json::json!({
         "log_retention_days": state.config.log_retention_days,
         "host": state.config.host,
@@ -913,4 +977,257 @@ async fn auth_check(
 /// POST /api/auth/logout — 登出（无状态，前端清除本地 key 即可）
 async fn auth_logout() -> impl IntoResponse {
     Json(serde_json::json!({"success": true}))
+}
+
+// ── 提供商管理 ──
+
+/// GET /api/providers — 提供商列表
+async fn list_providers(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(resp) = crate::auth::middleware::check_auth(&state, &headers) {
+        return resp;
+    }
+    match crate::models::list_providers(&state.db).await {
+        Ok(rows) => {
+            let providers: Vec<crate::models::ProviderConfig> = rows
+                .into_iter()
+                .map(|r| {
+                    let decrypted = crate::models::decrypt_api_key(
+                        &r.encrypted_api_key,
+                        &state.config.encryption_key,
+                    )
+                    .unwrap_or_default();
+                    r.into_config(decrypted)
+                })
+                .collect();
+            Json(serde_json::json!({ "providers": providers })).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /api/providers — 创建提供商
+async fn create_provider(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(req): Json<crate::models::CreateProviderRequest>,
+) -> impl IntoResponse {
+    if let Err(resp) = crate::auth::middleware::check_auth(&state, &headers) {
+        return resp;
+    }
+    match crate::models::create_provider(&state.db, req, &state.config.encryption_key).await {
+        Ok(provider) => (StatusCode::CREATED, Json(provider)).into_response(),
+        Err(e) => {
+            let msg = e.to_string();
+            let code = if msg.contains("UNIQUE constraint") {
+                StatusCode::CONFLICT
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            (code, Json(serde_json::json!({"error": msg}))).into_response()
+        }
+    }
+}
+
+/// GET /api/providers/:id — 提供商详情
+async fn get_provider(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Err(resp) = crate::auth::middleware::check_auth(&state, &headers) {
+        return resp;
+    }
+    match crate::models::get_provider(&state.db, &id).await {
+        Ok(Some(row)) => {
+            let decrypted = crate::models::decrypt_api_key(
+                &row.encrypted_api_key,
+                &state.config.encryption_key,
+            )
+            .unwrap_or_default();
+            Json(row.into_config(decrypted)).into_response()
+        }
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "提供商不存在"})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// PUT /api/providers/:id — 更新提供商
+async fn update_provider(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(req): Json<crate::models::UpdateProviderRequest>,
+) -> impl IntoResponse {
+    if let Err(resp) = crate::auth::middleware::check_auth(&state, &headers) {
+        return resp;
+    }
+    match crate::models::update_provider(&state.db, &id, req, &state.config.encryption_key).await {
+        Ok(Some(provider)) => Json(provider).into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "提供商不存在"})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// DELETE /api/providers/:id — 删除提供商
+async fn delete_provider(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Err(resp) = crate::auth::middleware::check_auth(&state, &headers) {
+        return resp;
+    }
+    match crate::models::delete_provider(&state.db, &id).await {
+        Ok(true) => Json(serde_json::json!({"success": true})).into_response(),
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "提供商不存在"})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// GET /api/providers/:id/models — 代理获取提供商的 /v1/models
+async fn get_provider_models(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Err(resp) = crate::auth::middleware::check_auth(&state, &headers) {
+        return resp;
+    }
+
+    // 查找提供商
+    let provider = match crate::models::get_provider(&state.db, &id).await {
+        Ok(Some(p)) => p,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "提供商不存在"})),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+
+    // 解密 API Key
+    let api_key = match crate::models::decrypt_api_key(
+        &provider.encrypted_api_key,
+        &state.config.encryption_key,
+    ) {
+        Ok(k) => k,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": format!("解密 API Key 失败: {}", e)})),
+            )
+                .into_response();
+        }
+    };
+
+    // 构建请求 URL：智能拼接，避免 /v1/v1/models 问题
+    let api_base = provider.api_base.trim_end_matches('/');
+    let url = if api_base.ends_with("/v1") {
+        format!("{}/models", api_base)
+    } else {
+        format!("{}/v1/models", api_base)
+    };
+
+    // 发送 HTTP 请求到提供商
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": format!("创建 HTTP 客户端失败: {}", e)})),
+            )
+        });
+
+    let client = match client {
+        Ok(c) => c,
+        Err(resp) => return resp.into_response(),
+    };
+
+    match client
+        .get(&url)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .send()
+        .await
+    {
+        Ok(resp) => {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+
+            if status.is_success() {
+                // 尝试解析为 JSON 并提取模型列表
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+                    // OpenAI 格式: {"data": [{"id": "gpt-4", ...}, ...]}
+                    let models = json["data"]
+                        .as_array()
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|m| m["id"].as_str().map(|s| s.to_string()))
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    Json(serde_json::json!({ "models": models })).into_response()
+                } else {
+                    Json(serde_json::json!({
+                        "models": [],
+                        "error": format!("无法解析提供商返回的模型列表: {}", &body[..body.len().min(200)])
+                    }))
+                    .into_response()
+                }
+            } else {
+                (
+                    StatusCode::BAD_GATEWAY,
+                    Json(serde_json::json!({
+                        "error": format!("提供商返回错误 (HTTP {}): {}", status.as_u16(),
+                            &body[..body.len().min(500)])
+                    })),
+                )
+                    .into_response()
+            }
+        }
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({"error": format!("请求提供商失败: {}", e)})),
+        )
+            .into_response(),
+    }
 }

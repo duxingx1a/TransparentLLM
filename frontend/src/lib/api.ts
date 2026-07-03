@@ -15,6 +15,8 @@ import type {
   ModelFormData,
   PlaygroundRequest,
   PlaygroundResponse,
+  ProviderConfig,
+  ProviderFormData,
   RequestLogDetail,
   SourceTag,
   UpdateSettingsRequest,
@@ -28,14 +30,26 @@ async function request<T>(
   options: RequestInit = {}
 ): Promise<T> {
   const url = `${API_BASE}${path}`;
-  const res = await fetch(url, {
-    ...options,
-    credentials: "include", // 携带 cookie（session 认证）
-    headers: {
-      "Content-Type": "application/json",
-      ...options.headers,
-    },
-  });
+
+  const token = typeof window !== "undefined" ? localStorage.getItem("master_key") : null;
+  const authHeaders: Record<string, string> = token
+    ? { Authorization: `Bearer ${token}` }
+    : {};
+
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      ...options,
+      credentials: "include",
+      headers: {
+        "Content-Type": "application/json",
+        ...authHeaders,
+        ...options.headers as Record<string, string>,
+      },
+    });
+  } catch {
+    throw new Error(`网络请求失败：无法连接到服务器（${url}）`);
+  }
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
@@ -97,6 +111,38 @@ export const modelsApi = {
       method: "POST",
       body: JSON.stringify(data),
     }),
+};
+
+// ========== 提供商 API ==========
+
+export const providersApi = {
+  /** 获取所有提供商 */
+  list: () => request<{ providers: ProviderConfig[] }>("/api/providers"),
+
+  /** 获取单个提供商 */
+  get: (id: string) => request<ProviderConfig>(`/api/providers/${id}`),
+
+  /** 创建提供商 */
+  create: (data: ProviderFormData) =>
+    request<ProviderConfig>("/api/providers", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+
+  /** 更新提供商 */
+  update: (id: string, data: Partial<ProviderFormData>) =>
+    request<ProviderConfig>(`/api/providers/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    }),
+
+  /** 删除提供商 */
+  delete: (id: string) =>
+    request<ApiSuccess>(`/api/providers/${id}`, { method: "DELETE" }),
+
+  /** 获取提供商的模型列表 */
+  getModels: (id: string) =>
+    request<{ models: string[] }>(`/api/providers/${id}/models`),
 };
 
 // ========== 统计 API ==========

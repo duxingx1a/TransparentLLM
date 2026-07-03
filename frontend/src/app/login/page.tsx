@@ -1,32 +1,30 @@
 "use client";
 
 import React, { useState } from "react";
-import { useRouter } from "next/navigation";
 import { Card, Form, Input, Button, Typography, Alert, Space } from "antd";
-import { InfoCircleOutlined } from "@ant-design/icons";
 import { useAuth } from "@/contexts/AuthContext";
+import { appPath } from "@/lib/paths";
 
-const { Title, Text, Paragraph } = Typography;
+const { Title, Text } = Typography;
 
 export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const { login, isAuthenticated, isLoading } = useAuth();
-  const router = useRouter();
 
   // 已登录则跳转
   React.useEffect(() => {
     if (!isLoading && isAuthenticated) {
-      router.replace("/dashboard");
+      window.location.replace(appPath("/dashboard"));
     }
-  }, [isLoading, isAuthenticated, router]);
+  }, [isLoading, isAuthenticated]);
 
   const handleSubmit = async (values: { master_key: string }) => {
     setLoading(true);
     setError("");
     try {
       await login(values.master_key);
-      router.replace("/dashboard");
+      window.location.replace(appPath("/dashboard"));
     } catch (err: any) {
       setError(err.message || "登录失败，请检查主密钥");
     } finally {
@@ -63,24 +61,6 @@ export default function LoginPage() {
             <Title level={3} style={{ marginBottom: 4 }}>登录</Title>
             <Text type="secondary">访问您的 LLM 代理网关管理面板</Text>
           </div>
-
-          {/* 默认凭据提示 */}
-          <Alert
-            message="默认凭据"
-            description={
-              <>
-                <Paragraph style={{ fontSize: 13, marginBottom: 4 }}>
-                  密码为您设置的 <code style={{ background: "#f5f5f5", padding: "1px 4px", borderRadius: 4, fontSize: 12 }}>TRANSPARENTLLM_MASTER_KEY</code> 环境变量值。
-                </Paragraph>
-                <Paragraph style={{ fontSize: 13, marginBottom: 0 }}>
-                  首次使用？请设置环境变量后重启服务。
-                </Paragraph>
-              </>
-            }
-            type="info"
-            icon={<InfoCircleOutlined />}
-            showIcon
-          />
 
           {/* 错误提示 */}
           {error && <Alert message={error} type="error" showIcon />}

@@ -2,37 +2,40 @@
 
 import React from "react";
 import { Avatar } from "antd";
+import { appPath } from "@/lib/paths";
 
-// 模型图标：使用 Google Favicon API 获取真实网站图标
+// 模型图标：本地 serve
 const modelFaviconMap: Record<string, string> = {
-  openai: "https://www.google.com/s2/favicons?domain=openai.com&sz=32",
-  gpt: "https://www.google.com/s2/favicons?domain=openai.com&sz=32",
-  anthropic: "https://www.google.com/s2/favicons?domain=anthropic.com&sz=32",
-  claude: "https://www.google.com/s2/favicons?domain=anthropic.com&sz=32",
-  deepseek: "https://www.google.com/s2/favicons?domain=deepseek.com&sz=32",
-  qwen: "https://www.google.com/s2/favicons?domain=tongyi.aliyun.com&sz=32",
-  alibaba: "https://www.google.com/s2/favicons?domain=aliyun.com&sz=32",
-  glm: "https://www.google.com/s2/favicons?domain=bigmodel.cn&sz=32",
-  zhipu: "https://www.google.com/s2/favicons?domain=bigmodel.cn&sz=32",
-  minimax: "https://www.google.com/s2/favicons?domain=minimax.io&sz=32",
-  xiaomi: "https://www.google.com/s2/favicons?domain=xiaomi.com&sz=32",
-  mi: "https://www.google.com/s2/favicons?domain=xiaomi.com&sz=32",
-  gemini: "https://www.google.com/s2/favicons?domain=gemini.google.com&sz=32",
-  google: "https://www.google.com/s2/favicons?domain=google.com&sz=32",
-  llama: "https://www.google.com/s2/favicons?domain=llama.com&sz=32",
-  meta: "https://www.google.com/s2/favicons?domain=meta.com&sz=32",
-  mistral: "https://www.google.com/s2/favicons?domain=mistral.ai&sz=32",
-  cohere: "https://www.google.com/s2/favicons?domain=cohere.com&sz=32",
+  openai: appPath("/favicons/openai_com.png"),
+  gpt: appPath("/favicons/openai_com.png"),
+  anthropic: appPath("/favicons/anthropic_com.png"),
+  claude: appPath("/favicons/anthropic_com.png"),
+  deepseek: appPath("/favicons/deepseek_com.png"),
+  qwen: appPath("/favicons/tongyi_aliyun_com.png"),
+  alibaba: appPath("/favicons/aliyun_com.png"),
+  glm: appPath("/favicons/bigmodel_cn.png"),
+  zhipu: appPath("/favicons/zhipu.svg"),
+  minimax: appPath("/favicons/minimax.svg"),
+  dogress: appPath("/favicons/dogress.svg"),
+  dotop: appPath("/favicons/dogress.svg"),
+  xiaomi: appPath("/favicons/xiaomi_com.png"),
+  mi: appPath("/favicons/xiaomi_com.png"),
+  gemini: appPath("/favicons/gemini_google_com.png"),
+  google: appPath("/favicons/google_com.png"),
+  llama: appPath("/favicons/llama_com.png"),
+  meta: appPath("/favicons/meta_com.png"),
+  mistral: appPath("/favicons/mistral_ai.png"),
+  cohere: appPath("/favicons/cohere_com.png"),
 };
 
 // 来源图标
 const sourceFaviconMap: Record<string, string> = {
-  copilot: "https://www.google.com/s2/favicons?domain=github.com&sz=32",
-  github: "https://www.google.com/s2/favicons?domain=github.com&sz=32",
-  node: "https://www.google.com/s2/favicons?domain=nodejs.org&sz=32",
-  python: "https://www.google.com/s2/favicons?domain=python.org&sz=32",
-  curl: "https://www.google.com/s2/favicons?domain=curl.se&sz=32",
-  go: "https://www.google.com/s2/favicons?domain=go.dev&sz=32",
+  copilot: appPath("/favicons/github_com.png"),
+  github: appPath("/favicons/github_com.png"),
+  node: appPath("/favicons/nodejs_org.png"),
+  python: appPath("/favicons/python_org.png"),
+  curl: appPath("/favicons/curl_se.png"),
+  go: appPath("/favicons/go_dev.png"),
 };
 
 function matchIcon(name: string, map: Record<string, string>): string | null {

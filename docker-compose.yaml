@@ -2,18 +2,15 @@ services:
   transparentllm:
     image: transparentllm:latest
     container_name: transparentllm
-    ports:
-      - "18400:18400"
+    expose:
+      - "18400"
     volumes:
-      # 持久化 SQLite 数据
       - ./data:/app/data
     environment:
-      # ⚠️ 部署前务必修改为你的 32 字节密钥！
       - TRANSPARENTLLM_ENCRYPTION_KEY=change-me-to-32-byte-secret-key!!
       - TRANSPARENTLLM_HOST=0.0.0.0
       - TRANSPARENTLLM_PORT=18400
-      - TRANSPARENTLLM_DATABASE_PATH=sqlite:/app/data/transparentllm.db?mode=rwc
-      - TRANSPARENTLLM_FRONTEND_DIR=/app/frontend/out
+      - TRANSPARENTLLM_DATABASE_URL=sqlite:/app/data/transparentllm.db?mode=rwc
       - TRANSPARENTLLM_LOG_RETENTION_DAYS=30
     restart: unless-stopped
     healthcheck:
@@ -21,3 +18,11 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+    networks:
+      - default
+      - nginx-net
+
+networks:
+  nginx-net:
+    external: true
+    name: nginx_nginx-net

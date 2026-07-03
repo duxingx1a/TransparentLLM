@@ -17,8 +17,6 @@ pub struct AppConfig {
     pub encryption_key: Vec<u8>,
     /// 日志保留天数，默认 30
     pub log_retention_days: i64,
-    /// 前端静态文件目录，默认 ./frontend/out
-    pub frontend_dir: String,
 }
 
 impl AppConfig {
@@ -48,7 +46,7 @@ impl AppConfig {
             port: std::env::var("TRANSPARENTLLM_PORT")
                 .ok()
                 .and_then(|p| p.parse().ok())
-                .unwrap_or(14000),
+                .unwrap_or(18400),
             database_url: std::env::var("TRANSPARENTLLM_DATABASE_URL")
                 .unwrap_or_else(|_| "sqlite:data/transparentllm.db?mode=rwc".into()),
             master_key_hash: master_key.map(|k| {
@@ -60,8 +58,6 @@ impl AppConfig {
                 .ok()
                 .and_then(|d| d.parse().ok())
                 .unwrap_or(30),
-            frontend_dir: std::env::var("TRANSPARENTLLM_FRONTEND_DIR")
-                .unwrap_or_else(|_| "./frontend/out".into()),
         })
     }
 }

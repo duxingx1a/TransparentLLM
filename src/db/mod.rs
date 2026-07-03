@@ -8,17 +8,18 @@ use sqlx::SqlitePool;
 ///
 /// 创建所有必要的表（如果不存在）
 pub async fn run_migrations(db: &SqlitePool) -> anyhow::Result<()> {
-    // 模型配置表
+    // 模型配置表（v1.4: 去除 model_name UNIQUE，允许同名多提供商）
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS models (
             id              TEXT PRIMARY KEY,
-            model_name      TEXT NOT NULL UNIQUE,
+            model_name      TEXT NOT NULL,
             provider        TEXT NOT NULL,
             api_base        TEXT NOT NULL,
             encrypted_api_key BLOB NOT NULL,
             input_price     REAL NOT NULL DEFAULT 0,
             output_price    REAL NOT NULL DEFAULT 0,
+            cache_price     REAL NOT NULL DEFAULT 0,
             model_type      TEXT NOT NULL DEFAULT 'chat',
             created_at      TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
@@ -129,6 +130,79 @@ pub async fn run_migrations(db: &SqlitePool) -> anyhow::Result<()> {
     )
     .execute(db)
     .await;
+
+    // ── v1.3: 提供商管理表 ──
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS providers (
+            id              TEXT PRIMARY KEY,
+            name            TEXT NOT NULL UNIQUE,
+            api_base        TEXT NOT NULL,
+            encrypted_api_key BLOB NOT NULL,
+            created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(db)
+    .await?;
+
+    // ── v1.4: 去掉 model_name UNIQUE，允许同名模型多提供商 ──
+    // ── v1.5: 加 upstream_model_name 字段 ──
+    let _ = sqlx::query(
+        "ALTER TABLE models ADD COLUMN upstream_model_name TEXT NOT NULL DEFAULT ''",
+    )
+    .execute(db)
+    .await;
+    {
+        let ddl: Result<(String,), _> = sqlx::query_as(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='models'",
+        )
+        .fetch_one(db)
+        .await;
+
+        let need_migrate = match ddl {
+            Ok((sql,)) => sql.contains("UNIQUE"),
+            Err(_) => {
+                // models 表不存在（可能被中断的迁移删除），创建无 UNIQUE 版本
+                tracing::warn!("models 表不存在，创建无 UNIQUE 版本");
+                true
+            }
+        };
+
+        if need_migrate {
+            tracing::info!("执行 v1.4 迁移：去掉 model_name UNIQUE 约束");
+            let _ = sqlx::query("DROP TABLE IF EXISTS models_new").execute(db).await;
+            sqlx::query(
+                r#"
+                CREATE TABLE models_new (
+                    id              TEXT PRIMARY KEY,
+                    model_name      TEXT NOT NULL,
+                    provider        TEXT NOT NULL,
+                    api_base        TEXT NOT NULL,
+                    encrypted_api_key BLOB NOT NULL,
+                    input_price     REAL NOT NULL DEFAULT 0,
+                    output_price    REAL NOT NULL DEFAULT 0,
+                    cache_price     REAL NOT NULL DEFAULT 0,
+                    model_type      TEXT NOT NULL DEFAULT 'chat',
+                    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+                )
+                "#,
+            )
+            .execute(db)
+            .await?;
+            // 复制数据（如果旧表存在）
+            let _ = sqlx::query("INSERT OR IGNORE INTO models_new SELECT * FROM models")
+                .execute(db)
+                .await;
+            let _ = sqlx::query("DROP TABLE IF EXISTS models").execute(db).await;
+            sqlx::query("ALTER TABLE models_new RENAME TO models")
+                .execute(db)
+                .await?;
+            tracing::info!("v1.4 迁移完成");
+        }
+    }
 
     Ok(())
 }

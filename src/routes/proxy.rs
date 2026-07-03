@@ -31,22 +31,26 @@ pub fn proxy_routes() -> Router<Arc<AppState>> {
 /// 返回所有已配置的模型名称，供客户端（Cursor/Copilot/Continue等）自动发现
 async fn list_models(
     State(state): State<Arc<AppState>>,
-) -> Json<serde_json::Value> {
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, axum::response::Response> {
+    if let Err(resp) = check_auth(&state, &headers) {
+        return Err(resp);
+    }
     let models = crate::models::list_models(&state.db).await.unwrap_or_default();
     let data: Vec<serde_json::Value> = models
         .into_iter()
         .map(|m| serde_json::json!({
-            "id": m.model_name,
+            "id": format!("{}-{}", m.provider, m.model_name),
             "object": "model",
             "created": 0,
             "owned_by": m.provider,
         }))
         .collect();
 
-    Json(serde_json::json!({
+    Ok(Json(serde_json::json!({
         "object": "list",
         "data": data,
-    }))
+    })))
 }
 
 /// LLM 对话补全代理

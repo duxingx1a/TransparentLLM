@@ -9,6 +9,7 @@ import {
   Modal,
   Form,
   Input,
+  AutoComplete,
   Select,
   InputNumber,
   Typography,
@@ -22,15 +23,17 @@ import {
   PlusOutlined,
   EditOutlined,
   DeleteOutlined,
-  ExperimentOutlined,
   ReloadOutlined,
+  EyeOutlined,
+  EyeInvisibleOutlined,
+  DownloadOutlined,
 } from "@ant-design/icons";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { modelsApi } from "@/lib/api";
+import { modelsApi, providersApi } from "@/lib/api";
 import { ModelIcon, ProviderIcon } from "@/lib/icons";
-import type { ModelConfig, ModelFormData } from "@/types";
+import type { ModelConfig, ModelFormData, ProviderConfig } from "@/types";
 
-const { Title } = Typography;
+const { Title, Text } = Typography;
 
 /** 模型类型标签颜色映射 */
 const modelTypeColors: Record<string, string> = {
@@ -40,24 +43,32 @@ const modelTypeColors: Record<string, string> = {
   audio: "orange",
 };
 
-/** 提供商标签颜色 */
-const providerColors: Record<string, string> = {
-  openai: "green",
-  anthropic: "orange",
-  custom: "default",
-};
-
 export default function ModelsPage() {
   const queryClient = useQueryClient();
   const [modalOpen, setModalOpen] = useState(false);
   const [editingModel, setEditingModel] = useState<ModelConfig | null>(null);
   const [form] = Form.useForm();
 
+  // 小眼睛状态：列表行和表单输入框
+  const [visibleKeys, setVisibleKeys] = useState<Set<string>>(new Set());
+  const [formKeyVisible, setFormKeyVisible] = useState(false);
+
+  // 从提供商拉取的模型名称列表
+  const [providerModels, setProviderModels] = useState<string[]>([]);
+  const [loadingModels, setLoadingModels] = useState(false);
+
   // 查询模型列表
   const { data, isLoading, refetch } = useQuery({
     queryKey: ["models"],
     queryFn: modelsApi.list,
   });
+
+  // 查询提供商列表（用于 AutoComplete 选项）
+  const { data: providersData } = useQuery({
+    queryKey: ["providers"],
+    queryFn: providersApi.list,
+  });
+  const providers = providersData?.providers || [];
 
   // 创建模型
   const createMutation = useMutation({
@@ -72,13 +83,8 @@ export default function ModelsPage() {
 
   // 更新模型
   const updateMutation = useMutation({
-    mutationFn: ({
-      id,
-      data,
-    }: {
-      id: string;
-      data: Partial<ModelFormData>;
-    }) => modelsApi.update(id, data),
+    mutationFn: ({ id, data }: { id: string; data: Partial<ModelFormData> }) =>
+      modelsApi.update(id, data),
     onSuccess: () => {
       message.success("模型更新成功");
       queryClient.invalidateQueries({ queryKey: ["models"] });
@@ -97,15 +103,57 @@ export default function ModelsPage() {
     onError: (err: Error) => message.error(err.message),
   });
 
+  // 从提供商拉取模型列表
+  const handleFetchProviderModels = async (providerName: string) => {
+    // 在 providers 列表中查找匹配的提供商
+    const matched = providers.find((p) => p.name === providerName);
+    if (!matched) {
+      setProviderModels([]);
+      return;
+    }
+
+    setLoadingModels(true);
+    try {
+      const res = await providersApi.getModels(matched.id);
+      setProviderModels(res.models || []);
+      if (res.models && res.models.length > 0) {
+        message.success(`从「${providerName}」拉取到 ${res.models.length} 个模型`);
+      } else {
+        message.warning(`「${providerName}」未返回模型列表`);
+      }
+    } catch (err: any) {
+      message.error(err.message || "拉取模型列表失败");
+    } finally {
+      setLoadingModels(false);
+    }
+  };
+
+  // 当提供商字段变化时
+  const handleProviderChange = (value: string) => {
+    // 查找匹配的提供商
+    const matched = providers.find((p) => p.name === value);
+    if (matched) {
+      // 自动填充 api_base 和 api_key（从提供商获取）
+      form.setFieldsValue({
+        api_base: matched.api_base,
+        api_key: matched.decrypted_api_key,
+      });
+      // 拉取模型列表
+      handleFetchProviderModels(value);
+    }
+  };
+
   const handleOpenCreate = () => {
     setEditingModel(null);
     form.resetFields();
     form.setFieldsValue({
-      provider: "openai",
       model_type: "chat",
       input_price: 0,
       output_price: 0,
+      cache_price: 0,
     });
+    setProviderModels([]);
+    setFormKeyVisible(false);
     setModalOpen(true);
   };
 
@@ -118,8 +166,11 @@ export default function ModelsPage() {
       api_key: "",
       input_price: model.input_price,
       output_price: model.output_price,
+      cache_price: model.cache_price,
       model_type: model.model_type,
     });
+    setProviderModels([]);
+    setFormKeyVisible(false);
     setModalOpen(true);
   };
 
@@ -127,12 +178,13 @@ export default function ModelsPage() {
     setModalOpen(false);
     setEditingModel(null);
     form.resetFields();
+    setProviderModels([]);
+    setFormKeyVisible(false);
   };
 
   const handleSubmit = async () => {
     const values = await form.validateFields();
     if (editingModel) {
-      // 编辑时如果不修改 key 则不传 api_key
       const data: Partial<ModelFormData> = { ...values };
       if (!data.api_key) delete data.api_key;
       updateMutation.mutate({ id: editingModel.id, data });
@@ -141,9 +193,45 @@ export default function ModelsPage() {
     }
   };
 
+  // 切换列表行的小眼睛
+  const toggleKeyVisible = (id: string) => {
+    setVisibleKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  // 构建提供商 AutoComplete 选项
+  const providerOptions = providers.map((p) => ({
+    value: p.name,
+    label: (
+      <Space>
+        <Text strong>{p.name}</Text>
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          {p.api_base}
+        </Text>
+      </Space>
+    ),
+  }));
+
+  // 构建模型名称 AutoComplete 选项
+  const modelNameOptions = providerModels.map((m) => ({
+    value: m,
+    label: m,
+  }));
+
   const columns = [
-    { title: "模型名称", dataIndex: "model_name", key: "model_name",
-      render: (v: string) => <ModelIcon modelName={v} /> },
+    {
+      title: "模型名称",
+      dataIndex: "model_name",
+      key: "model_name",
+      render: (v: string) => <ModelIcon modelName={v} />,
+    },
     {
       title: "提供商",
       dataIndex: "provider",
@@ -158,12 +246,43 @@ export default function ModelsPage() {
         <Tag color={modelTypeColors[v] || "default"}>{v}</Tag>
       ),
     },
-    { title: "API 地址", dataIndex: "api_base", key: "api_base", ellipsis: true },
+    {
+      title: "API 地址",
+      dataIndex: "api_base",
+      key: "api_base",
+      ellipsis: true,
+    },
     {
       title: "API Key",
-      dataIndex: "api_key_masked",
-      key: "api_key_masked",
-      render: (v: string) => <code>{v}</code>,
+      dataIndex: "decrypted_api_key",
+      key: "decrypted_api_key",
+      width: 220,
+      render: (v: string, record: ModelConfig) => {
+        const isVisible = visibleKeys.has(record.id);
+        return (
+          <Space>
+            <code
+              style={{
+                maxWidth: 140,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+                display: "inline-block",
+              }}
+            >
+              {isVisible ? v : v ? "••••••••" : "-"}
+            </code>
+            {v && (
+              <Button
+                type="text"
+                size="small"
+                icon={isVisible ? <EyeInvisibleOutlined /> : <EyeOutlined />}
+                onClick={() => toggleKeyVisible(record.id)}
+              />
+            )}
+          </Space>
+        );
+      },
     },
     {
       title: "输入价格 (¥/1M tokens)",
@@ -175,6 +294,12 @@ export default function ModelsPage() {
       title: "输出价格 (¥/1M tokens)",
       dataIndex: "output_price",
       key: "output_price",
+      render: (v: number) => (v ? `¥${v}` : "-"),
+    },
+    {
+      title: "缓存价格 (¥/1M tokens)",
+      dataIndex: "cache_price",
+      key: "cache_price",
       render: (v: number) => (v ? `¥${v}` : "-"),
     },
     {
@@ -198,12 +323,7 @@ export default function ModelsPage() {
             okText="确定"
             cancelText="取消"
           >
-            <Button
-              type="link"
-              size="small"
-              danger
-              icon={<DeleteOutlined />}
-            >
+            <Button type="link" size="small" danger icon={<DeleteOutlined />}>
               删除
             </Button>
           </Popconfirm>
@@ -246,8 +366,10 @@ export default function ModelsPage() {
           rowKey="id"
           pagination={false}
           size="small"
-          scroll={{ x: 1000 }}
-          locale={{ emptyText: <Empty description="暂无模型，点击上方「添加模型」开始" /> }}
+          scroll={{ x: 1100 }}
+          locale={{
+            emptyText: <Empty description="暂无模型，点击上方「添加模型」开始" />,
+          }}
         />
       )}
 
@@ -259,29 +381,39 @@ export default function ModelsPage() {
         onCancel={handleCloseModal}
         confirmLoading={createMutation.isPending || updateMutation.isPending}
         destroyOnHidden
-        width={560}
+        width={680}
       >
         <Form form={form} layout="vertical" style={{ marginTop: 16 }}>
           <Form.Item
-            name="model_name"
-            label="模型名称"
-            rules={[{ required: true, message: "请输入模型名称" }]}
+            name="provider"
+            label="提供商"
+            rules={[{ required: true, message: "请输入提供商" }]}
+            tooltip="可从已有提供商中选择（自动填充 API 地址并拉取模型列表），也可自由输入"
           >
-            <Input placeholder="如 gpt-4o, claude-3.5-sonnet" />
+            <AutoComplete
+              options={providerOptions}
+              placeholder="如 OpenAI、Qwen、DeepSeek"
+              onChange={handleProviderChange}
+              filterOption={() => true}
+            />
           </Form.Item>
 
           <Form.Item
-            name="provider"
-            label="提供商"
-            rules={[{ required: true, message: "请选择提供商" }]}
+            name="model_name"
+            label="模型名称"
+            rules={[{ required: true, message: "请输入或选择模型名称" }]}
           >
-            <Select
-              options={[
-                { label: "OpenAI", value: "openai" },
-                { label: "Anthropic", value: "anthropic" },
-                { label: "自定义", value: "custom" },
-              ]}
-            />
+            {providerModels.length > 0 ? (
+              <AutoComplete
+                options={modelNameOptions}
+                placeholder="从提供商模型列表中选择，或自由输入"
+                filterOption={(inputValue, option) =>
+                  option!.value.toLowerCase().includes(inputValue.toLowerCase())
+                }
+              />
+            ) : (
+              <Input placeholder="如 gpt-4o, claude-3.5-sonnet" />
+            )}
           </Form.Item>
 
           <Form.Item
@@ -294,15 +426,25 @@ export default function ModelsPage() {
 
           <Form.Item
             name="api_key"
-            label={editingModel ? "API Key（留空不修改）" : "API Key"}
+            label={editingModel ? "API Key（留空不修改）" : "API Key（选择已有提供商自动填充）"}
             rules={
               editingModel
                 ? []
-                : [{ required: true, message: "请输入 API Key" }]
+                : [{ required: true, message: "请选择提供商或手动输入 API Key" }]
             }
           >
-            <Input.Password
+            <Input
+              type={formKeyVisible ? "text" : "password"}
               placeholder={editingModel ? "留空则保持原 Key 不变" : "sk-xxxx"}
+              suffix={
+                <Button
+                  type="text"
+                  size="small"
+                  icon={formKeyVisible ? <EyeInvisibleOutlined /> : <EyeOutlined />}
+                  onClick={() => setFormKeyVisible(!formKeyVisible)}
+                  tabIndex={-1}
+                />
+              }
             />
           </Form.Item>
 
@@ -334,9 +476,18 @@ export default function ModelsPage() {
                 style={{ width: 200 }}
               />
             </Form.Item>
+            <Form.Item name="cache_price" label="缓存价格 (¥/1M tokens)" tooltip="缓存命中时的输入价格，默认等于输入价格">
+              <InputNumber
+                placeholder="0"
+                min={0}
+                step={0.01}
+                style={{ width: 200 }}
+              />
+            </Form.Item>
           </Space>
         </Form>
       </Modal>
     </div>
   );
 }
+

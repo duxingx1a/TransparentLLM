@@ -6,14 +6,16 @@
 export interface ModelConfig {
   id: string;
   model_name: string;
-  provider: "openai" | "anthropic" | "custom";
+  provider: string;
   api_base: string;
-  api_key_masked: string;
   input_price: number;
   output_price: number;
-  model_type: "chat" | "embedding" | "image" | "audio";
+  cache_price: number;
+  model_type: string;
   created_at: string;
   updated_at: string;
+  has_key: boolean;
+  decrypted_api_key: string;
 }
 
 /** 创建/更新模型请求 */
@@ -24,7 +26,27 @@ export interface ModelFormData {
   api_key: string;
   input_price?: number;
   output_price?: number;
+  cache_price?: number;
   model_type?: string;
+}
+
+// ========== 提供商相关 ==========
+
+/** 提供商配置 */
+export interface ProviderConfig {
+  id: string;
+  name: string;
+  api_base: string;
+  decrypted_api_key: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/** 创建/更新提供商请求 */
+export interface ProviderFormData {
+  name: string;
+  api_base: string;
+  api_key: string;
 }
 
 // ========== 日志相关 ==========

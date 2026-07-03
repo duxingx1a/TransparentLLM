@@ -6,7 +6,7 @@
 
 ## 当前状态
 
-- ✅ 所有 23 个 API 接口已实现
+- ✅ 所有 24 个 API 接口已实现，全部需要鉴权（GET 接口之前漏加，已修复）
 - ✅ 代理转发已通（Qwen3.6-27B → do.top）
 - ✅ 仪表盘统计有细分数据（prompt/completion tokens）
 - ✅ PUT/DELETE 路由已修复（`:id` 语法）
@@ -43,33 +43,34 @@ cargo run
 
 ---
 
-## 接口清单（23个）
+## 接口清单（24个，全部需要鉴权）
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | /health | 健康检查 |
-| POST | /api/auth/login | 登录 |
-| GET | /api/auth/check | 检查登录状态 |
-| POST | /api/auth/logout | 登出 |
-| GET | /api/models | 模型列表 |
-| POST | /api/models | 添加模型 |
-| GET | /api/models/:id | 模型详情 |
-| PUT | /api/models/:id | 更新模型 |
-| DELETE | /api/models/:id | 删除模型 |
-| POST | /api/models/:id/test | 连通性测试 |
-| POST | /api/playground/chat | Playground |
-| GET | /api/logs | 日志列表（筛选+分页） |
-| GET | /api/logs/:id | 日志详情 |
-| GET | /api/stats/overview | 仪表盘总览 |
-| GET | /api/stats/daily | 每日统计 |
-| GET | /api/source-tags | 来源标签 |
-| GET | /api/settings | 获取设置 |
-| PUT | /api/settings | 更新设置 |
-| GET | /v1/models | OpenAI 模型列表 |
-| POST | /v1/chat/completions | 对话代理 |
-| POST | /v1/embeddings | 嵌入代理 |
-| POST | /v1/images/generations | 图像代理 |
-| POST | /v1/audio/transcriptions | 音频代理 |
+| 方法 | 路径 | 说明 | 鉴权 |
+|------|------|------|:--:|
+| GET | /health | 健康检查 | - |
+| POST | /api/auth/login | 登录 | - |
+| GET | /api/auth/check | 检查登录状态 | - |
+| POST | /api/auth/logout | 登出 | - |
+| GET | /api/models | 模型列表 | ✅ |
+| POST | /api/models | 添加模型 | ✅ |
+| GET | /api/models/:id | 模型详情 | ✅ |
+| PUT | /api/models/:id | 更新模型 | ✅ |
+| DELETE | /api/models/:id | 删除模型 | ✅ |
+| POST | /api/models/:id/test | 连通性测试 | ✅ |
+| GET | /api/playground/endpoints | 可用端点列表 | ✅ |
+| POST | /api/playground/chat | Playground | ✅ |
+| GET | /api/logs | 日志列表（筛选+分页） | ✅ |
+| GET | /api/logs/:id | 日志详情 | ✅ |
+| GET | /api/stats/overview | 仪表盘总览 | ✅ |
+| GET | /api/stats/daily | 每日统计 | ✅ |
+| GET | /api/source-tags | 来源标签 | ✅ |
+| GET | /api/settings | 获取设置 | ✅ |
+| PUT | /api/settings | 更新设置 | ✅ |
+| GET | /v1/models | OpenAI 模型列表 | ✅ |
+| POST | /v1/chat/completions | 对话代理 | ✅ |
+| POST | /v1/embeddings | 嵌入代理 | ✅ |
+| POST | /v1/images/generations | 图像代理 | ✅ |
+| POST | /v1/audio/transcriptions | 音频代理 | ✅ |
 
 ---
 

@@ -6,6 +6,7 @@ import { Layout, Menu, Button, Typography } from "antd";
 import {
   BarChartOutlined,
   BlockOutlined,
+  CloudServerOutlined,
   ExperimentOutlined,
   LineChartOutlined,
   SettingOutlined,
@@ -22,6 +23,7 @@ const { Text } = Typography;
 const menuItems = [
   { key: "/dashboard", icon: <BarChartOutlined />, label: "用量总览" },
   { key: "/models", icon: <BlockOutlined />, label: "模型管理" },
+  { key: "/providers", icon: <CloudServerOutlined />, label: "提供商管理" },
   { key: "/playground", icon: <ExperimentOutlined />, label: "Playground" },
   { key: "/logs", icon: <LineChartOutlined />, label: "请求日志" },
   { key: "/settings", icon: <SettingOutlined />, label: "系统设置" },
@@ -37,6 +39,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const selectedKey =
     menuItems.find((item) => pathname.startsWith(item.key))?.key ||
     "/dashboard";
+
+  // 静态导出模式下 router.prefetch() 会触发 RSC 请求（全部 404），
+  // 不仅无用还占用浏览器并发连接数，拖慢正常请求，已移除。
 
   return (
     <Layout style={{ minHeight: "100vh" }}>

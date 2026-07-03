@@ -127,15 +127,46 @@ pub async fn proxy_request(
         .unwrap_or("unknown")
         .to_string();
 
-    let model_config = crate::models::get_model_by_name(&state.db, &model_name)
-        .await
-        .map_err(|e| ProxyError::UpstreamError(format!("数据库错误: {}", e), None))?;
+    // 解析 provider-model_name 格式（用第一个 - 分隔），优先精确匹配
+    let model_config = if let Some((prov, name)) = model_name.split_once('-') {
+        match crate::models::get_model_by_name_and_provider(&state.db, name, prov).await {
+            Ok(Some(cfg)) => Some(cfg),
+            _ => {
+                // 精确匹配失败，回退到仅按 model_name 匹配
+                crate::models::get_model_by_name(&state.db, &model_name).await.ok().flatten()
+            }
+        }
+    } else {
+        crate::models::get_model_by_name(&state.db, &model_name).await.ok().flatten()
+    };
 
     let model_config = model_config
         .ok_or_else(|| ProxyError::ModelNotFound(model_name.clone()))?;
 
-    let api_key = decrypt_api_key(&model_config.encrypted_api_key, &state.config.encryption_key)
+    let mut api_key = decrypt_api_key(&model_config.encrypted_api_key, &state.config.encryption_key)
         .map_err(|e| ProxyError::UpstreamError(format!("Key 解密失败: {}", e), None))?;
+
+    // 如果 api_key 是占位符，从提供商表获取真实 key
+    if api_key == "auto-from-provider" || api_key.is_empty() {
+        if let Ok(Some(prov_row)) = crate::models::get_provider_by_name(&state.db, &model_config.provider).await {
+            api_key = decrypt_api_key(&prov_row.encrypted_api_key, &state.config.encryption_key)
+                .unwrap_or_default();
+        }
+    }
+
+    // 转发给上游时：用 upstream_model_name 替代 model 字段
+    let upstream_real_name = {
+        if !model_config.upstream_model_name.is_empty() {
+            model_config.upstream_model_name.clone()
+        } else {
+            // 移除 model_name 中的 provider- 前缀（如果存在）
+            model_name.split_once('-').map(|(_, n)| n.to_string()).unwrap_or(model_name.clone())
+        }
+    };
+    let mut upstream_body = body.clone();
+    if let Some(obj) = upstream_body.as_object_mut() {
+        obj.insert("model".into(), serde_json::Value::String(upstream_real_name.clone()));
+    }
 
     let user_agent = headers
         .get("user-agent")
@@ -143,14 +174,14 @@ pub async fn proxy_request(
         .unwrap_or("");
     let source_tag = parse_source_tag(user_agent).to_string();
 
-    let is_stream = body
+    let is_stream = upstream_body
         .get("stream")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
     if is_stream {
         return proxy_stream_request(
-            state, body, model_config, api_key, model_name,
+            state, upstream_body, model_config, api_key, upstream_real_name.to_string(),
             source_tag, start_time, start,
         )
         .await;
@@ -180,7 +211,7 @@ pub async fn proxy_request(
     }
 
     let response = request_builder
-        .json(&body)
+        .json(&upstream_body)
         .send()
         .await
         .map_err(|e| {

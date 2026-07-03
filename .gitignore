@@ -28,3 +28,8 @@
 
 ## 参考源码（不提交）
 /reference/
+
+## 日志和大文件
+backend.log
+*.tar
+*.log

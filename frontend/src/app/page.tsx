@@ -1,16 +1,14 @@
 "use client";
 
 import { useEffect } from "react";
-import { useRouter } from "next/navigation";
 import { Spin } from "antd";
+import { appPath } from "@/lib/paths";
 
 /** 首页：直接跳转到登录页，登录页会自行检查登录状态 */
 export default function Home() {
-  const router = useRouter();
-
   useEffect(() => {
-    router.replace("/login");
-  }, [router]);
+    window.location.replace(appPath("/login"));
+  }, []);
 
   return (
     <div
