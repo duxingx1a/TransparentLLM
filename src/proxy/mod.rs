@@ -140,11 +140,65 @@ pub async fn proxy_request(
         crate::models::get_model_by_name(&state.db, &model_name).await.ok().flatten()
     };
 
-    let model_config = model_config
-        .ok_or_else(|| ProxyError::ModelNotFound(model_name.clone()))?;
+    let model_config = match model_config {
+        Some(cfg) => cfg,
+        None => {
+            // 记录错误日志
+            let log_entry = RequestLogEntry {
+                id: uuid::Uuid::new_v4().to_string(),
+                model_name: model_name.clone(),
+                provider: String::new(),
+                api_base: String::new(),
+                source_tag: parse_source_tag(
+                    headers.get("user-agent").and_then(|v| v.to_str().ok()).unwrap_or(""),
+                ).to_string(),
+                start_time: start_time.clone(),
+                end_time: chrono::Utc::now().to_rfc3339(),
+                completion_start_time: None,
+                duration_ms: start.elapsed().as_millis() as i64,
+                total_tokens: 0, prompt_tokens: 0, completion_tokens: 0,
+                cache_hit: false, cache_key: None, cached_tokens: 0,
+                spend: 0.0,
+                status: "error".into(),
+                messages: extract_messages_json(&body),
+                response: None,
+                error_msg: Some(format!("模型未配置: {}", model_name)),
+                tokens_per_second: 0.0,
+            };
+            let db = state.db.clone();
+            tokio::spawn(async move { write_request_log(&db, &log_entry).await.ok(); });
+            return Err(ProxyError::ModelNotFound(model_name));
+        }
+    };
 
     let mut api_key = decrypt_api_key(&model_config.encrypted_api_key, &state.config.encryption_key)
-        .map_err(|e| ProxyError::UpstreamError(format!("Key 解密失败: {}", e), None))?;
+        .map_err(|e| {
+            // 记录错误日志
+            let log_entry = RequestLogEntry {
+                id: uuid::Uuid::new_v4().to_string(),
+                model_name: model_name.clone(),
+                provider: model_config.provider.clone(),
+                api_base: model_config.api_base.clone(),
+                source_tag: parse_source_tag(
+                    headers.get("user-agent").and_then(|v| v.to_str().ok()).unwrap_or(""),
+                ).to_string(),
+                start_time: start_time.clone(),
+                end_time: chrono::Utc::now().to_rfc3339(),
+                completion_start_time: None,
+                duration_ms: start.elapsed().as_millis() as i64,
+                total_tokens: 0, prompt_tokens: 0, completion_tokens: 0,
+                cache_hit: false, cache_key: None, cached_tokens: 0,
+                spend: 0.0,
+                status: "error".into(),
+                messages: extract_messages_json(&body),
+                response: None,
+                error_msg: Some(format!("Key 解密失败: {}", e)),
+                tokens_per_second: 0.0,
+            };
+            let db = state.db.clone();
+            tokio::spawn(async move { write_request_log(&db, &log_entry).await.ok(); });
+            ProxyError::UpstreamError(format!("Key 解密失败: {}", e), None)
+        })?;
 
     // 如果 api_key 是占位符，从提供商表获取真实 key
     if api_key == "auto-from-provider" || api_key.is_empty() {
@@ -215,13 +269,36 @@ pub async fn proxy_request(
         .send()
         .await
         .map_err(|e| {
-            if e.is_timeout() {
-                ProxyError::UpstreamError("上游请求超时".into(), None)
+            let err_msg = if e.is_timeout() {
+                "上游请求超时".to_string()
             } else if e.is_connect() {
-                ProxyError::UpstreamError(format!("无法连接到上游: {}", e), None)
+                format!("无法连接到上游: {}", e)
             } else {
-                ProxyError::UpstreamError(e.to_string(), None)
-            }
+                e.to_string()
+            };
+            // 记录错误日志
+            let log_entry = RequestLogEntry {
+                id: uuid::Uuid::new_v4().to_string(),
+                model_name: model_name.clone(),
+                provider: model_config.provider.clone(),
+                api_base: model_config.api_base.clone(),
+                source_tag: source_tag.clone(),
+                start_time: start_time.clone(),
+                end_time: chrono::Utc::now().to_rfc3339(),
+                completion_start_time: None,
+                duration_ms: start.elapsed().as_millis() as i64,
+                total_tokens: 0, prompt_tokens: 0, completion_tokens: 0,
+                cache_hit: false, cache_key: None, cached_tokens: 0,
+                spend: 0.0,
+                status: "error".into(),
+                messages: extract_messages_json(&body),
+                response: None,
+                error_msg: Some(err_msg.clone()),
+                tokens_per_second: 0.0,
+            };
+            let db = state.db.clone();
+            tokio::spawn(async move { write_request_log(&db, &log_entry).await.ok(); });
+            ProxyError::UpstreamError(err_msg, None)
         })?;
 
     let status_code = response.status();
@@ -291,6 +368,7 @@ pub async fn proxy_request(
         messages: extract_messages_json(&body),
         response: Some(response_text),
         error_msg: if success { None } else { Some(format!("HTTP {}", status_code.as_u16())) },
+        tokens_per_second: usage.tokens_per_second,
     };
 
     tokio::spawn(async move {
@@ -335,13 +413,36 @@ async fn proxy_stream_request(
         .send()
         .await
         .map_err(|e| {
-            if e.is_timeout() {
-                ProxyError::UpstreamError("上游 SSE 请求超时".into(), None)
+            let err_msg = if e.is_timeout() {
+                "上游 SSE 请求超时".to_string()
             } else if e.is_connect() {
-                ProxyError::UpstreamError(format!("无法连接到上游: {}", e), None)
+                format!("无法连接到上游: {}", e)
             } else {
-                ProxyError::UpstreamError(e.to_string(), None)
-            }
+                e.to_string()
+            };
+            // 记录错误日志
+            let log_entry = RequestLogEntry {
+                id: uuid::Uuid::new_v4().to_string(),
+                model_name: model_name.clone(),
+                provider: model_config.provider.clone(),
+                api_base: model_config.api_base.clone(),
+                source_tag: source_tag.clone(),
+                start_time: start_time.clone(),
+                end_time: chrono::Utc::now().to_rfc3339(),
+                completion_start_time: None,
+                duration_ms: start.elapsed().as_millis() as i64,
+                total_tokens: 0, prompt_tokens: 0, completion_tokens: 0,
+                cache_hit: false, cache_key: None, cached_tokens: 0,
+                spend: 0.0,
+                status: "error".into(),
+                messages: extract_messages_json(&body),
+                response: None,
+                error_msg: Some(err_msg.clone()),
+                tokens_per_second: 0.0,
+            };
+            let db = state.db.clone();
+            tokio::spawn(async move { write_request_log(&db, &log_entry).await.ok(); });
+            ProxyError::UpstreamError(err_msg, None)
         })?;
 
     let status_code = response.status();
@@ -375,6 +476,7 @@ async fn proxy_stream_request(
             messages: extract_messages_json(&body),
             response: Some(error_body.clone()),
             error_msg: Some(error_body.clone()),
+            tokens_per_second: 0.0,
         };
 
         tokio::spawn(async move {
@@ -449,6 +551,7 @@ async fn proxy_stream_request(
                         .and_then(|v| extract_messages_json(v)),
                     response: final_body.as_ref().map(|b| serde_json::to_string(b).unwrap_or_default()),
                     error_msg,
+                    tokens_per_second: usage.tokens_per_second,
                 };
 
                 if let Err(e) = write_request_log(&db, &log_entry).await {

@@ -33,6 +33,8 @@ where
         let mut completion_start_time: Option<String> = None;
         let mut error_msg: Option<String> = None;
         let mut first_content_chunk = true;
+        // 累积流式回复的完整内容
+        let mut accumulated_content = String::new();
 
         use futures_util::StreamExt;
         while let Some(chunk_result) = stream.next().await {
@@ -45,6 +47,27 @@ where
                                 completion_start_time =
                                     Some(chrono::Utc::now().to_rfc3339());
                                 first_content_chunk = false;
+                            }
+                        }
+                    }
+
+                    // 累积 delta.content
+                    if let Ok(text) = std::str::from_utf8(&bytes) {
+                        for line in text.lines() {
+                            if let Some(json_str) = line.strip_prefix("data: ") {
+                                if json_str == "[DONE]" {
+                                    continue;
+                                }
+                                if let Ok(chunk) = serde_json::from_str::<serde_json::Value>(json_str) {
+                                    if let Some(delta) = chunk.get("choices")
+                                        .and_then(|c| c.get(0))
+                                        .and_then(|c| c.get("delta"))
+                                    {
+                                        if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
+                                            accumulated_content.push_str(content);
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -64,7 +87,7 @@ where
         }
 
         // 尝试解析完整响应体
-        let parsed_body = std::str::from_utf8(&full_body)
+        let mut parsed_body = std::str::from_utf8(&full_body)
             .ok()
             .and_then(|text| {
                 // 提取最后一个有效的 JSON 行（包含 usage 信息）
@@ -75,11 +98,28 @@ where
                         if json_str == "[DONE]" {
                             None
                         } else {
-                            serde_json::from_str(json_str).ok()
+                            serde_json::from_str::<serde_json::Value>(json_str).ok()
                         }
                     })
                     .last()
             });
+
+        // 将累积的完整内容注入到响应体中，便于日志记录
+        if !accumulated_content.is_empty() {
+            if let Some(ref mut body) = parsed_body {
+                if let Some(choices) = body.get_mut("choices") {
+                    if let Some(first) = choices.get_mut(0) {
+                        // 设置 message.content（非流式格式），便于详情页提取
+                        first.as_object_mut().and_then(|obj| {
+                            obj.insert("message".into(), serde_json::json!({
+                                "role": "assistant",
+                                "content": accumulated_content,
+                            }))
+                        });
+                    }
+                }
+            }
+        }
 
         // 调用完成回调
         on_complete(parsed_body, completion_start_time, error_msg).await;

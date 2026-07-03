@@ -30,14 +30,10 @@ const AuthContext = createContext<AuthContextType>({
 });
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  // 乐观认证：有本地 key 就立即认为已认证，不等 check 请求
-  const [isAuthenticated, setIsAuthenticated] = useState(() => {
-    if (typeof window !== "undefined") {
-      return localStorage.getItem("master_key") !== null;
-    }
-    return false;
-  });
-  const [isLoading, setIsLoading] = useState(false); // 不再初始 loading，有 key 直接显示内容
+  // SSR 与客户端初始状态必须一致（都为 loading），
+  // 避免 hydration mismatch。认证状态在 useEffect 中解析。
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
   const checkingRef = useRef(false);
   const hasVerifiedRef = useRef(false); // 防止重复后台验证
 
@@ -67,8 +63,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  // 启动时后台静默验证（不阻塞页面渲染）
+  // 启动时：同步从 localStorage 读取乐观认证状态（hydration 后立即生效），
+  // 然后后台静默验证。这样既避免 hydration mismatch，又能快速显示内容。
   useEffect(() => {
+    // 1. 同步解析 localStorage（乐观认证）
+    const localKey = localStorage.getItem("master_key");
+    if (localKey) {
+      setIsAuthenticated(true);
+    }
+    setIsLoading(false);
+
+    // 2. 后台验证（可选，失败不影响乐观状态）
     if (!hasVerifiedRef.current) {
       checkAuth();
     }

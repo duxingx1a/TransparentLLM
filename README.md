@@ -32,7 +32,7 @@ export TRANSPARENTLLM_ENCRYPTION_KEY="12345678901234567890123456789012"
 cargo run
 
 # 3. 浏览器访问
-#    管理面板: http://127.0.0.1:18000
+#    管理面板: http://127.0.0.1:18400
 #    默认密码: admin
 
 # 4. 前端开发（可选，独立运行）
@@ -43,7 +43,7 @@ cd frontend && npm install && npm run dev   # → http://127.0.0.1:3000
 
 ```bash
 # 在管理面板添加模型后，直接将请求指向 TransparentLLM
-curl http://127.0.0.1:14000/v1/chat/completions \
+curl http://127.0.0.1:18400/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "x-source-tag: my-app" \
   -d '{
@@ -59,7 +59,7 @@ curl http://127.0.0.1:14000/v1/chat/completions \
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
 | `TRANSPARENTLLM_ENCRYPTION_KEY` | **必填**，32 字节加密密钥 | - |
-| `TRANSPARENTLLM_PORT` | 监听端口 | `14000` |
+| `TRANSPARENTLLM_PORT` | 监听端口 | `18400` |
 | `TRANSPARENTLLM_DATABASE_PATH` | SQLite 数据库路径 | `sqlite:data/transparentllm.db?mode=rwc` |
 | `TRANSPARENTLLM_LOG_RETENTION_DAYS` | 日志保留天数 | `30` |
 

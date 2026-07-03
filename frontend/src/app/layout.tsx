@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import { AntdRegistry } from "@ant-design/nextjs-registry";
+import { ConfigProvider } from "antd";
+import zhCN from "antd/locale/zh_CN";
 import ReactQueryProvider from "@/contexts/ReactQueryProvider";
 import { AuthProvider } from "@/contexts/AuthContext";
 import "./globals.css";
@@ -21,9 +23,11 @@ export default function RootLayout({
     <html lang="zh-CN">
       <body className={inter.className}>
         <AntdRegistry>
-          <ReactQueryProvider>
-            <AuthProvider>{children}</AuthProvider>
-          </ReactQueryProvider>
+          <ConfigProvider locale={zhCN}>
+            <ReactQueryProvider>
+              <AuthProvider>{children}</AuthProvider>
+            </ReactQueryProvider>
+          </ConfigProvider>
         </AntdRegistry>
       </body>
     </html>

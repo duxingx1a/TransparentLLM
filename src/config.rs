@@ -7,7 +7,7 @@
 pub struct AppConfig {
     /// 监听地址，默认 127.0.0.1
     pub host: String,
-    /// 监听端口，默认 14000
+    /// 监听端口，默认 18400
     pub port: u16,
     /// SQLite 数据库连接字符串
     pub database_url: String,

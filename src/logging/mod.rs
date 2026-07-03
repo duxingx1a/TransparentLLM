@@ -28,6 +28,7 @@ pub struct RequestLogEntry {
     pub messages: Option<String>,
     pub response: Option<String>,
     pub error_msg: Option<String>,
+    pub tokens_per_second: f64,
 }
 
 /// 写入请求日志
@@ -39,13 +40,13 @@ pub async fn write_request_log(db: &SqlitePool, entry: &RequestLogEntry) -> anyh
             start_time, end_time, completion_start_time, duration_ms,
             total_tokens, prompt_tokens, completion_tokens,
             cache_hit, cache_key, cached_tokens, spend, status,
-            messages, response, error_msg, created_at
+            messages, response, error_msg, tokens_per_second, created_at
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5,
             ?6, ?7, ?8, ?9,
             ?10, ?11, ?12,
             ?13, ?14, ?15, ?16, ?17,
-            ?18, ?19, ?20, datetime('now')
+            ?18, ?19, ?20, ?21, datetime('now')
         )
         "#,
     )
@@ -69,6 +70,7 @@ pub async fn write_request_log(db: &SqlitePool, entry: &RequestLogEntry) -> anyh
     .bind(&entry.messages)
     .bind(&entry.response)
     .bind(&entry.error_msg)
+    .bind(entry.tokens_per_second)
     .execute(db)
     .await?;
 

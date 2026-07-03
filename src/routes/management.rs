@@ -452,6 +452,7 @@ struct LogRow {
     cache_hit: i32,
     spend: f64,
     status: String,
+    tokens_per_second: f64,
 }
 
 /// GET /api/logs — 请求日志列表（分页+筛选）
@@ -480,10 +481,10 @@ async fn list_logs(
         conditions.push(format!("status = '{}'", s.replace('\'', "''")));
     }
     if let Some(ref d) = params.start_date {
-        conditions.push(format!("date(created_at) >= '{}'", d.replace('\'', "''")));
+        conditions.push(format!("created_at >= '{}'", d.replace('\'', "''")));
     }
     if let Some(ref d) = params.end_date {
-        conditions.push(format!("date(created_at) <= '{}'", d.replace('\'', "''")));
+        conditions.push(format!("created_at <= '{}'", d.replace('\'', "''")));
     }
 
     let where_clause = conditions.join(" AND ");
@@ -499,7 +500,7 @@ async fn list_logs(
     let query_sql = format!(
         "SELECT id, model_name, provider, source_tag, start_time, end_time, duration_ms, \
          CAST((julianday(completion_start_time) - julianday(start_time)) * 86400000 AS INTEGER) as ttft_ms, \
-         total_tokens, prompt_tokens, completion_tokens, cached_tokens, cache_hit, spend, status \
+         total_tokens, prompt_tokens, completion_tokens, cached_tokens, cache_hit, spend, status, tokens_per_second \
          FROM request_logs WHERE {} ORDER BY created_at DESC LIMIT {} OFFSET {}",
         where_clause, page_size, offset
     );
@@ -547,6 +548,7 @@ struct LogDetailRow {
     response: Option<serde_json::Value>,
     error_msg: Option<String>,
     created_at: String,
+    tokens_per_second: f64,
 }
 
 async fn get_log_detail(
@@ -569,9 +571,14 @@ async fn get_log_detail(
                 }
                 other => other.clone(),
             };
-            // 从响应中提取文本内容
+            // 从响应中提取文本内容（兼容流式 delta 和非流式 message）
             let response_text = row.response.as_ref().and_then(|r| {
-                r.get("choices")?.get(0)?.get("message")?.get("content")?.as_str().map(|s| s.to_string())
+                // 先尝试非流式格式：choices[0].message.content
+                if let Some(text) = r.get("choices")?.get(0)?.get("message")?.get("content")?.as_str() {
+                    return Some(text.to_string());
+                }
+                // 再尝试流式格式：choices[0].delta.content
+                r.get("choices")?.get(0)?.get("delta")?.get("content")?.as_str().map(|s| s.to_string())
             });
             Json(serde_json::json!({
                 "id": row.id,
@@ -597,6 +604,7 @@ async fn get_log_detail(
                 "response_text": response_text,
                 "error_msg": row.error_msg,
                 "created_at": row.created_at,
+                "tokens_per_second": row.tokens_per_second,
             })).into_response()
         }
         Ok(None) => (
@@ -693,7 +701,7 @@ async fn get_stats_overview(
     .await
     .unwrap_or_default();
 
-    // 每日趋势（最近 30 天）
+    // 每日趋势（最近 30 天，按日期正序）
     #[derive(sqlx::FromRow, Serialize)]
     struct DailyTrend {
         date: String,
@@ -704,7 +712,25 @@ async fn get_stats_overview(
     let daily_trend: Vec<DailyTrend> = sqlx::query_as(
         "SELECT date, SUM(total_requests) as requests, SUM(total_tokens) as tokens, \
                 SUM(total_spend) as spend \
-         FROM daily_stats GROUP BY date ORDER BY date DESC LIMIT 30"
+         FROM daily_stats GROUP BY date ORDER BY date ASC LIMIT 30"
+    )
+    .fetch_all(db)
+    .await
+    .unwrap_or_default();
+
+    // 每日趋势 — 按模型分组（堆叠柱状图用）
+    #[derive(sqlx::FromRow, Serialize)]
+    struct DailyByModel {
+        date: String,
+        model_name: String,
+        requests: i64,
+        tokens: i64,
+        spend: f64,
+    }
+    let daily_by_model: Vec<DailyByModel> = sqlx::query_as(
+        "SELECT date, model_name, SUM(total_requests) as requests, SUM(total_tokens) as tokens, \
+                SUM(total_spend) as spend \
+         FROM daily_stats GROUP BY date, model_name ORDER BY date ASC"
     )
     .fetch_all(db)
     .await
@@ -756,6 +782,7 @@ async fn get_stats_overview(
             "spend": (s.spend * 10000.0).round() / 10000.0,
         })).collect::<Vec<_>>(),
         "daily_trend": daily_trend,
+        "daily_by_model": daily_by_model,
         "today_models": today_models.iter().map(|m| serde_json::json!({
             "model_name": m.model_name,
             "requests": m.cnt,

@@ -12,6 +12,8 @@ pub struct UsageStats {
     pub cache_key: Option<String>,
     /// 缓存命中的 token 数量（OpenAI: prompt_tokens_details.cached_tokens）
     pub cached_tokens: u32,
+    /// 每秒处理的 token 数（部分上游提供商返回）
+    pub tokens_per_second: f64,
 }
 
 /// 根据提供商类型解析用量
@@ -72,6 +74,12 @@ fn parse_openai(body: &serde_json::Value) -> UsageStats {
 
     let cache_hit = cached_tokens > 0;
 
+    // tokens_per_second（部分上游提供商返回，如千问/vLLM）
+    let tokens_per_second = usage
+        .and_then(|u| u.get("tokens_per_second"))
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+
     UsageStats {
         total_tokens,
         prompt_tokens,
@@ -79,6 +87,7 @@ fn parse_openai(body: &serde_json::Value) -> UsageStats {
         cache_hit,
         cache_key: None,
         cached_tokens,
+        tokens_per_second,
     }
 }
 
@@ -119,5 +128,6 @@ fn parse_anthropic(body: &serde_json::Value) -> UsageStats {
         cache_hit: cache_read > 0,
         cache_key: None,
         cached_tokens: cache_read as u32,
+        tokens_per_second: 0.0,
     }
 }

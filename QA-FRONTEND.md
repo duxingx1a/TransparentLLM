@@ -17,7 +17,7 @@
 
 - 所有 API 以 `/api/` 开头
 - 路径参数用 `:id` 不是 `{id}`
-- 后端端口 **14000**（前端 dev server 需配 rewrites 代理到 14000）
+- 后端端口 **18400**（前端 dev server 需配 rewrites 代理到 18400）
 - 开发模式无需主密钥，`/api/auth/login` 任意密码都能登录
 - 登录后需在后续请求带 `Authorization: Bearer <密码>`
 

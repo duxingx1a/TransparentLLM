@@ -40,10 +40,24 @@ function LogDetailContent() {
 
   return (
     <div>
-      <Space style={{ marginBottom: 16 }}>
+      {/* 固定顶部返回栏 */}
+      <div
+        style={{
+          position: "sticky",
+          top: 0,
+          zIndex: 100,
+          background: "#fff",
+          padding: "12px 0",
+          marginBottom: 8,
+          borderBottom: "1px solid #f0f0f0",
+          display: "flex",
+          alignItems: "center",
+          gap: 12,
+        }}
+      >
         <Button icon={<ArrowLeftOutlined />} onClick={() => router.push("/logs")}>返回列表</Button>
-      </Space>
-      <Title level={4} style={{ marginBottom: 24 }}>日志详情</Title>
+        <Title level={4} style={{ margin: 0 }}>日志详情</Title>
+      </div>
 
       <Card title="基本信息" style={{ marginBottom: 16 }}>
         <Descriptions bordered size="small" column={{ xs: 1, sm: 2, md: 3 }}>
@@ -52,6 +66,7 @@ function LogDetailContent() {
           <Descriptions.Item label="来源"><Tag color="blue">{data.source_tag}</Tag></Descriptions.Item>
           <Descriptions.Item label="状态"><Tag color={data.status === "success" ? "green" : "red"}>{data.status}</Tag></Descriptions.Item>
           <Descriptions.Item label="总耗时">{formatDuration(data.duration_ms)}</Descriptions.Item>
+          {data.tokens_per_second > 0 && <Descriptions.Item label="Token/s"><Text strong>{data.tokens_per_second.toFixed(1)}</Text></Descriptions.Item>}
           <Descriptions.Item label="API 地址">{data.api_base}</Descriptions.Item>
           <Descriptions.Item label="开始时间">{dayjs(data.start_time).format("YYYY-MM-DD HH:mm:ss")}</Descriptions.Item>
           <Descriptions.Item label="结束时间">{dayjs(data.end_time).format("YYYY-MM-DD HH:mm:ss")}</Descriptions.Item>
@@ -68,6 +83,7 @@ function LogDetailContent() {
           <Descriptions.Item label="输出 Token">{data.completion_tokens}</Descriptions.Item>
           <Descriptions.Item label="费用"><Text strong style={{ color: "#fa8c16" }}>{formatSpend(data.spend)}</Text></Descriptions.Item>
           <Descriptions.Item label="缓存命中">{data.cache_hit ? <Tag color="gold">是</Tag> : <Tag>否</Tag>}</Descriptions.Item>
+          {data.cached_tokens > 0 && <Descriptions.Item label="缓存 Token"><Text style={{ color: "#faad14" }}>{data.cached_tokens}</Text></Descriptions.Item>}
           {data.cache_key && <Descriptions.Item label="缓存 Key"><code>{data.cache_key}</code></Descriptions.Item>}
         </Descriptions>
       </Card>

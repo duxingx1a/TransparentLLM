@@ -19,6 +19,7 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::response::Html;
+use axum::extract::DefaultBodyLimit;
 use tower_http::cors::CorsLayer;
 use sqlx::sqlite::SqlitePoolOptions;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
@@ -89,6 +90,8 @@ async fn main() -> anyhow::Result<()> {
                     "Authorization".parse().unwrap(),
                 ]),
         )
+        // 放宽请求体大小限制到 100MB（默认 2MB 太小，Copilot 扩展会发送大量代码上下文）
+        .layer(DefaultBodyLimit::max(100 * 1024 * 1024))
         .with_state(state);
 
     // 启动服务

@@ -68,7 +68,7 @@ function ChatView() {
         <div>
           <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
             <Space size={4}><Text type="secondary" style={{ fontSize: 12 }}>Max Tokens</Text><Tooltip title="Max output length"><InfoCircleOutlined style={{ fontSize: 11, color: "#d9d9d9" }} /></Tooltip></Space>
-            <InputNumber min={1} max={128000} step={100} value={maxT} onChange={v => setMaxT(v || 2048)} size="small" bordered={false} style={{ width: 60 }} />
+            <InputNumber min={1} max={128000} step={100} value={maxT} onChange={v => setMaxT(v || 2048)} size="small" variant="borderless" style={{ width: 60 }} />
           </div>
           <Slider min={64} max={32768} step={64} value={maxT} onChange={setMaxT} tooltip={{ formatter: null }} />
         </div>

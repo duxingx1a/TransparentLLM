@@ -1,24 +1,43 @@
 "use client";
 
-import React, { useState } from "react";
-import { Card, Col, Row, Statistic, Table, Spin, Typography, Empty, Select, DatePicker, Space } from "antd";
+import React, { useState, useMemo } from "react";
+import {
+  Card, Col, Row, Statistic, Table, Spin, Typography, Empty, Select,
+  DatePicker, Space, Segmented, theme,
+} from "antd";
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
+  ResponsiveContainer, Cell,
+} from "recharts";
 import { useQuery } from "@tanstack/react-query";
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from "recharts";
 import { statsApi } from "@/lib/api";
 import { ModelIcon, SourceIcon } from "@/lib/icons";
 import type { DashboardOverview } from "@/types";
 import dayjs from "dayjs";
 
-const { Title } = Typography;
+const { Title, Text } = Typography;
+const { useToken } = theme;
+
+// 模型配色（最多 10 个模型）
+const MODEL_COLORS = [
+  "#1677ff", "#52c41a", "#faad14", "#ff4d4f", "#722ed1",
+  "#13c2c2", "#eb2f96", "#fa8c16", "#2f54eb", "#a0d911",
+];
 
 // 时间范围选项
 const timeRangeOptions = [
-  { label: "过去 15 分钟", value: "15m" },
-  { label: "过去 1 小时", value: "1h" },
-  { label: "过去 1 天", value: "1d" },
-  { label: "过去 7 天", value: "7d" },
-  { label: "过去 30 天", value: "30d" },
-  { label: "自定义", value: "custom" },
+  { label: "7 天", value: "7d" },
+  { label: "14 天", value: "14d" },
+  { label: "30 天", value: "30d" },
+];
+
+// 图表类型
+type ChartType = "requests" | "tokens" | "spend";
+
+const chartTypeOptions = [
+  { label: "请求次数", value: "requests" },
+  { label: "Token 用量", value: "tokens" },
+  { label: "费用", value: "spend" },
 ];
 
 function formatNumber(n: number): string {
@@ -31,107 +50,205 @@ function formatSpend(n: number): string {
   return `¥${n.toFixed(4)}`;
 }
 
+function formatYAxis(value: number, chartType: ChartType): string {
+  if (chartType === "spend") return `¥${value.toFixed(2)}`;
+  return formatNumber(value);
+}
+
 export default function DashboardPage() {
-  const [timeRange, setTimeRange] = useState("1d");
-  const [customRange, setCustomRange] = useState<[string, string] | null>(null);
+  const { token } = useToken();
+  const [timeRange, setTimeRange] = useState("7d");
+  const [chartType, setChartType] = useState<ChartType>("tokens");
 
   const { data, isLoading } = useQuery<DashboardOverview>({
-    queryKey: ["dashboard-overview", timeRange, customRange],
+    queryKey: ["dashboard-overview", timeRange],
     queryFn: () => statsApi.overview(),
   });
 
+  // 将 daily_by_model 转换为堆叠柱状图数据
+  const stackedData = useMemo(() => {
+    if (!data?.daily_by_model?.length) return [];
+
+    // 收集所有日期和模型
+    const dateSet = new Set<string>();
+    const modelSet = new Set<string>();
+    data.daily_by_model.forEach((d) => {
+      dateSet.add(d.date);
+      modelSet.add(d.model_name);
+    });
+
+    const dates = Array.from(dateSet).sort();
+    const models = Array.from(modelSet);
+
+    // 按日期聚合
+    return dates.map((date) => {
+      const row: Record<string, string | number> = { date };
+      models.forEach((model) => {
+        const entry = data.daily_by_model.find(
+          (d) => d.date === date && d.model_name === model
+        );
+        row[model] = entry ? entry[chartType] : 0;
+      });
+      return row;
+    });
+  }, [data, chartType]);
+
+  // 获取所有模型名（用于 legend 和 bar）
+  const allModels = useMemo(() => {
+    if (!data?.daily_by_model) return [];
+    return Array.from(new Set(data.daily_by_model.map((d) => d.model_name)));
+  }, [data]);
+
+  // 截断日期显示 (07-01 → 7/1)
+  const formatDate = (d: string) => {
+    const m = dayjs(d);
+    return `${m.month() + 1}/${m.date()}`;
+  };
+
+  const chartTitle =
+    chartType === "requests"
+      ? "每日请求次数（按模型）"
+      : chartType === "tokens"
+        ? "每日 Token 用量（按模型）"
+        : "每日费用（按模型）";
+
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
+      {/* 标题栏 */}
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          marginBottom: 24,
+        }}
+      >
         <Title level={4} style={{ margin: 0 }}>用量总览</Title>
         <Space>
           <Select
             value={timeRange}
-            onChange={(val) => {
-              setTimeRange(val);
-              if (val !== "custom") setCustomRange(null);
-            }}
+            onChange={setTimeRange}
             options={timeRangeOptions}
-            style={{ width: 160 }}
+            style={{ width: 100 }}
           />
-          {timeRange === "custom" && (
-            <DatePicker.RangePicker
-              onChange={(dates) => {
-                if (dates && dates[0] && dates[1]) {
-                  setCustomRange([dates[0].format("YYYY-MM-DD"), dates[1].format("YYYY-MM-DD")]);
-                } else {
-                  setCustomRange(null);
-                }
-              }}
-              allowClear
-              placeholder={["开始日期", "结束日期"]}
-            />
-          )}
         </Space>
       </div>
 
       {isLoading ? (
-        <div style={{ textAlign: "center", padding: 60 }}><Spin size="large" /></div>
+        <div style={{ textAlign: "center", padding: 60 }}>
+          <Spin size="large" />
+        </div>
       ) : data ? (
         <>
-          {/* 调用统计 */}
+          {/* ── 概览卡片 ── */}
           <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
-            <Col xs={12} sm={8} md={6}>
-              <Card size="small"><Statistic title="总调用次数" value={data.today.total_requests} /></Card>
+            <Col xs={12} sm={6}>
+              <Card size="small" styles={{ body: { padding: "16px 20px" } }}>
+                <Statistic
+                  title="今日请求"
+                  value={data.today.total_requests}
+                  valueStyle={{ fontSize: 24 }}
+                />
+              </Card>
             </Col>
-            <Col xs={12} sm={8} md={6}>
-              <Card size="small"><Statistic title="成功调用" value={data.today.total_requests} valueStyle={{ color: "#52c41a" }} /></Card>
+            <Col xs={12} sm={6}>
+              <Card size="small" styles={{ body: { padding: "16px 20px" } }}>
+                <Statistic
+                  title="今日 Token"
+                  value={formatNumber(data.today.total_tokens)}
+                  valueStyle={{ fontSize: 24, color: "#1677ff" }}
+                />
+              </Card>
             </Col>
-            <Col xs={12} sm={8} md={6}>
-              <Card size="small"><Statistic title="失败调用" value={0} valueStyle={{ color: "#ff4d4f" }} /></Card>
+            <Col xs={12} sm={6}>
+              <Card size="small" styles={{ body: { padding: "16px 20px" } }}>
+                <Statistic
+                  title="今日费用"
+                  value={formatSpend(data.today.total_spend)}
+                  valueStyle={{ fontSize: 24, color: "#faad14" }}
+                />
+              </Card>
+            </Col>
+            <Col xs={12} sm={6}>
+              <Card size="small" styles={{ body: { padding: "16px 20px" } }}>
+                <Statistic
+                  title="累计费用"
+                  value={formatSpend(data.total.total_spend)}
+                  valueStyle={{ fontSize: 24 }}
+                />
+              </Card>
             </Col>
           </Row>
 
-          {/* Token 统计 */}
-          <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
-            <Col xs={12} sm={6}>
-              <Card size="small"><Statistic title="输入 Token" value={formatNumber(data.today.prompt_tokens ?? data.total.total_tokens)} /></Card>
-            </Col>
-            <Col xs={12} sm={6}>
-              <Card size="small"><Statistic title="输出 Token" value={formatNumber(data.today.completion_tokens ?? 0)} /></Card>
-            </Col>
-            <Col xs={12} sm={6}>
-              <Card size="small"><Statistic title="累计 Token" value={formatNumber(data.total.total_tokens)} /></Card>
-            </Col>
-            <Col xs={12} sm={6}>
-              <Card size="small"><Statistic title="缓存输入 Token" value={formatNumber(data.today.cache_tokens ?? 0)} /></Card>
-            </Col>
-          </Row>
-
-          {/* 费用 */}
-          <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
-            <Col xs={12} sm={8}>
-              <Card size="small"><Statistic title="今日费用" value={formatSpend(data.today.total_spend)} precision={4} /></Card>
-            </Col>
-            <Col xs={12} sm={8}>
-              <Card size="small"><Statistic title="累计费用" value={formatSpend(data.total.total_spend)} precision={4} /></Card>
-            </Col>
-          </Row>
-
-          {/* 趋势图 */}
-          {data.daily_trend.length > 0 && (
-            <Card title="每日用量趋势" size="small" style={{ marginBottom: 24 }}>
-              <ResponsiveContainer width="100%" height={300}>
-                <LineChart data={data.daily_trend}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="date" tick={{ fontSize: 12 }} />
-                  <YAxis yAxisId="left" tick={{ fontSize: 12 }} />
-                  <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 12 }} />
-                  <Tooltip />
-                  <Legend />
-                  <Line yAxisId="left" type="monotone" dataKey="tokens" stroke="#1677ff" name="Token" strokeWidth={2} dot={false} />
-                  <Line yAxisId="right" type="monotone" dataKey="requests" stroke="#52c41a" name="请求数" strokeWidth={2} dot={false} />
-                </LineChart>
+          {/* ── 堆叠柱状图 ── */}
+          {stackedData.length > 0 && (
+            <Card
+              size="small"
+              style={{ marginBottom: 24 }}
+              title={
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    width: "100%",
+                  }}
+                >
+                  <span>{chartTitle}</span>
+                  <Segmented
+                    size="small"
+                    value={chartType}
+                    onChange={(v) => setChartType(v as ChartType)}
+                    options={chartTypeOptions}
+                  />
+                </div>
+              }
+            >
+              <ResponsiveContainer width="100%" height={320}>
+                <BarChart data={stackedData}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                  <XAxis
+                    dataKey="date"
+                    tickFormatter={formatDate}
+                    tick={{ fontSize: 12 }}
+                    interval="preserveStartEnd"
+                  />
+                  <YAxis
+                    tickFormatter={(v) => formatYAxis(v, chartType)}
+                    tick={{ fontSize: 12 }}
+                    width={65}
+                  />
+                  <Tooltip
+                    formatter={(value: number, name: string) =>
+                      chartType === "spend"
+                        ? [`¥${value.toFixed(4)}`, name]
+                        : [formatNumber(value), name]
+                    }
+                    labelFormatter={(label: string) => dayjs(label).format("MM-DD")}
+                  />
+                  <Legend
+                    wrapperStyle={{ fontSize: 12, paddingTop: 8 }}
+                    formatter={(value: string) =>
+                      value.length > 16 ? value.slice(0, 16) + "…" : value
+                    }
+                  />
+                  {allModels.map((model, i) => (
+                    <Bar
+                      key={model}
+                      dataKey={model}
+                      stackId="a"
+                      fill={MODEL_COLORS[i % MODEL_COLORS.length]}
+                      radius={
+                        i === allModels.length - 1 ? [2, 2, 0, 0] : [0, 0, 0, 0]
+                      }
+                    />
+                  ))}
+                </BarChart>
               </ResponsiveContainer>
             </Card>
           )}
 
-          {/* 模型 & 来源用量排行 */}
+          {/* ── 模型排行 & 来源排行 ── */}
           <Row gutter={[16, 16]}>
             <Col xs={24} md={12}>
               <Card title="模型用量排行" size="small">
@@ -141,10 +258,29 @@ export default function DashboardPage() {
                   pagination={false}
                   size="small"
                   columns={[
-                    { title: "模型", dataIndex: "model_name", render: (v: string) => <ModelIcon modelName={v} /> },
-                    { title: "调用次数", dataIndex: "requests", align: "right", render: (v: number) => formatNumber(v) },
-                    { title: "Token", dataIndex: "tokens", align: "right", render: (v: number) => formatNumber(v) },
-                    { title: "费用", dataIndex: "spend", align: "right", render: (v: number) => formatSpend(v) },
+                    {
+                      title: "模型",
+                      dataIndex: "model_name",
+                      render: (v: string) => <ModelIcon modelName={v} />,
+                    },
+                    {
+                      title: "调用次数",
+                      dataIndex: "requests",
+                      align: "right",
+                      render: (v: number) => formatNumber(v),
+                    },
+                    {
+                      title: "Token",
+                      dataIndex: "tokens",
+                      align: "right",
+                      render: (v: number) => formatNumber(v),
+                    },
+                    {
+                      title: "费用",
+                      dataIndex: "spend",
+                      align: "right",
+                      render: (v: number) => formatSpend(v),
+                    },
                   ]}
                 />
               </Card>
@@ -157,9 +293,29 @@ export default function DashboardPage() {
                   pagination={false}
                   size="small"
                   columns={[
-                    { title: "来源", dataIndex: "source_tag", render: (v: string) => <SourceIcon sourceTag={v} /> },
-                    { title: "调用次数", dataIndex: "requests", align: "right", render: (v: number) => formatNumber(v) },
-                    { title: "Token", dataIndex: "tokens", align: "right", render: (v: number) => formatNumber(v) },
+                    {
+                      title: "来源",
+                      dataIndex: "source_tag",
+                      render: (v: string) => <SourceIcon sourceTag={v} />,
+                    },
+                    {
+                      title: "调用次数",
+                      dataIndex: "requests",
+                      align: "right",
+                      render: (v: number) => formatNumber(v),
+                    },
+                    {
+                      title: "Token",
+                      dataIndex: "tokens",
+                      align: "right",
+                      render: (v: number) => formatNumber(v),
+                    },
+                    {
+                      title: "费用",
+                      dataIndex: "spend",
+                      align: "right",
+                      render: (v: number) => formatSpend(v),
+                    },
                   ]}
                 />
               </Card>

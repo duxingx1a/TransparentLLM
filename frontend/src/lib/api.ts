@@ -1,6 +1,6 @@
 // TransparentLLM API 调用层
 // 自动根据环境选择 API 基础路径：
-// - 开发环境: http://127.0.0.1:4001（从 .env 读取）
+// - 开发环境: http://127.0.0.1:18400（通过 next.config.js rewrites 代理）
 // - 生产环境: 空字符串（同源）
 
 import type {

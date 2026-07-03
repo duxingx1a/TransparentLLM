@@ -64,20 +64,24 @@ export interface RequestLogItem {
   total_tokens: number;
   prompt_tokens: number;
   completion_tokens: number;
+  cached_tokens: number;
   cache_hit: string | null;
   spend: number;
   status: "success" | "error";
+  tokens_per_second: number;
 }
 
 /** 请求日志详情 */
 export interface RequestLogDetail extends RequestLogItem {
   api_base: string;
   completion_start_time: string | null;
+  cached_tokens: number;
   cache_key: string | null;
   messages: ChatMessage[] | null;
   response_text: string | null;
   error_msg: string | null;
   created_at: string;
+  tokens_per_second: number;
 }
 
 /** 聊天消息 */
@@ -90,11 +94,11 @@ export interface ChatMessage {
 export interface LogQueryParams {
   page?: number;
   size?: number;
-  model?: string;
-  source?: string;
+  model_name?: string;
+  source_tag?: string;
   status?: string;
-  from?: string;
-  to?: string;
+  start_date?: string;
+  end_date?: string;
 }
 
 /** 分页信息 */
@@ -141,6 +145,13 @@ export interface DashboardOverview {
   }>;
   daily_trend: Array<{
     date: string;
+    requests: number;
+    tokens: number;
+    spend: number;
+  }>;
+  daily_by_model: Array<{
+    date: string;
+    model_name: string;
     requests: number;
     tokens: number;
     spend: number;

@@ -154,7 +154,17 @@ pub async fn run_migrations(db: &SqlitePool) -> anyhow::Result<()> {
     )
     .execute(db)
     .await;
+
+    // ── v1.6: 加 tokens_per_second 字段 ──
+    let _ = sqlx::query(
+        "ALTER TABLE request_logs ADD COLUMN tokens_per_second REAL NOT NULL DEFAULT 0",
+    )
+    .execute(db)
+    .await;
     {
+        // 清理可能残留的 models_new（上次迁移中断遗留）
+        let _ = sqlx::query("DROP TABLE IF EXISTS models_new").execute(db).await;
+
         let ddl: Result<(String,), _> = sqlx::query_as(
             "SELECT sql FROM sqlite_master WHERE type='table' AND name='models'",
         )
@@ -164,7 +174,7 @@ pub async fn run_migrations(db: &SqlitePool) -> anyhow::Result<()> {
         let need_migrate = match ddl {
             Ok((sql,)) => sql.contains("UNIQUE"),
             Err(_) => {
-                // models 表不存在（可能被中断的迁移删除），创建无 UNIQUE 版本
+                // models 表不存在，需要创建
                 tracing::warn!("models 表不存在，创建无 UNIQUE 版本");
                 true
             }
@@ -172,7 +182,6 @@ pub async fn run_migrations(db: &SqlitePool) -> anyhow::Result<()> {
 
         if need_migrate {
             tracing::info!("执行 v1.4 迁移：去掉 model_name UNIQUE 约束");
-            let _ = sqlx::query("DROP TABLE IF EXISTS models_new").execute(db).await;
             sqlx::query(
                 r#"
                 CREATE TABLE models_new (
@@ -185,6 +194,7 @@ pub async fn run_migrations(db: &SqlitePool) -> anyhow::Result<()> {
                     output_price    REAL NOT NULL DEFAULT 0,
                     cache_price     REAL NOT NULL DEFAULT 0,
                     model_type      TEXT NOT NULL DEFAULT 'chat',
+                    upstream_model_name TEXT NOT NULL DEFAULT '',
                     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
                     updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
                 )
@@ -192,8 +202,8 @@ pub async fn run_migrations(db: &SqlitePool) -> anyhow::Result<()> {
             )
             .execute(db)
             .await?;
-            // 复制数据（如果旧表存在）
-            let _ = sqlx::query("INSERT OR IGNORE INTO models_new SELECT * FROM models")
+            // 复制数据（如果旧表存在且列数匹配）
+            let _ = sqlx::query("INSERT OR IGNORE INTO models_new (id, model_name, provider, api_base, encrypted_api_key, input_price, output_price, cache_price, model_type, created_at, updated_at) SELECT id, model_name, provider, api_base, encrypted_api_key, input_price, output_price, cache_price, model_type, created_at, updated_at FROM models")
                 .execute(db)
                 .await;
             let _ = sqlx::query("DROP TABLE IF EXISTS models").execute(db).await;
