@@ -2,7 +2,8 @@
 
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
-import { Table, Switch, Select, DatePicker, Button, Empty } from "antd";
+import { Table, Switch, Select, DatePicker, Button, Empty, ConfigProvider, Tooltip } from "antd";
+import zhCN from "antd/locale/zh_CN";
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { logsApi, modelsApi } from "@/lib/api";
 import { ModelIcon, SourceIcon } from "@/lib/icons";
@@ -155,6 +156,9 @@ export default function LogsPage() {
   const totalPages = Math.ceil(total / pageSize);
 
   const getTimeLabel = () => {
+    if (timeRange === "custom" && customRange) {
+      return `${dayjs(customRange[0]).format("MM/DD HH:mm")} ~ ${dayjs(customRange[1]).format("MM/DD HH:mm")}`;
+    }
     return TIME_OPTIONS.find((o) => o.value === timeRange)?.label || "最近 24 小时";
   };
 
@@ -172,7 +176,7 @@ export default function LogsPage() {
       title: <span onClick={() => handleSort("model_name")} className="cursor-pointer select-none">模型 {sortIcon("model_name")}</span>,
       dataIndex: "model_name",
       key: "model_name",
-      width: 120,
+      width: 160,
       render: (v: string) => <ModelIcon modelName={v} />,
     },
     {
@@ -186,17 +190,32 @@ export default function LogsPage() {
       title: "状态",
       dataIndex: "status",
       key: "status",
-      width: 80,
-      render: (v: string) => {
+      width: 120,
+      render: (v: string, record: RequestLogItem) => {
         const isSuccess = v === "success";
-        return (
+        const statusTag = (
           <span
-            className={`px-2 py-1 rounded-md text-xs font-medium inline-block text-center w-16 ${
+            className={`px-2 py-1 rounded-md text-[11px] font-medium inline-block text-center w-14 ${
               isSuccess ? "bg-green-100 text-green-800" : "bg-red-100 text-red-800"
             }`}
           >
-            {isSuccess ? "Success" : "Failure"}
+            {isSuccess ? "成功" : "失败"}
           </span>
+        );
+        if (isSuccess || !record.error_msg) return statusTag;
+        return (
+          <Tooltip
+            title={
+              <div style={{ maxWidth: 320 }}>
+                <div style={{ fontWeight: 600, marginBottom: 4 }}>失败原因</div>
+                <div style={{ fontSize: 12, lineHeight: 1.5 }}>{record.error_msg}</div>
+              </div>
+            }
+            placement="topLeft"
+            overlayStyle={{ maxWidth: 400 }}
+          >
+            {statusTag}
+          </Tooltip>
         );
       },
     },
@@ -222,10 +241,10 @@ export default function LogsPage() {
       },
     },
     {
-      title: <span onClick={() => handleSort("tokens_per_second")} className="cursor-pointer select-none">Token/s {sortIcon("tokens_per_second")}</span>,
+      title: <span onClick={() => handleSort("tokens_per_second")} className="cursor-pointer select-none">速率 {sortIcon("tokens_per_second")}</span>,
       dataIndex: "tokens_per_second",
       key: "tokens_per_second",
-      width: 90,
+      width: 80,
       align: "right" as const,
       render: (v: number) => <span className="text-[13px]">{v > 0 ? v.toFixed(1) : "-"}</span>,
     },
@@ -303,9 +322,9 @@ export default function LogsPage() {
         <Button onClick={resetFilters}>重置过滤</Button>
       </div>
 
-      {/* ── 筛选面板（LiteLLM grid-cols-3 样式） ── */}
+      {/* ── 筛选面板（LiteLLM grid-cols-4 样式） ── */}
       {showFilters && (
-        <div className="grid grid-cols-4 gap-x-6 gap-y-4 mb-6">
+        <div className="grid grid-cols-4 gap-x-4 gap-y-3 mb-6 p-4 bg-gray-50 rounded-lg border border-gray-200">
           <div className="flex flex-col gap-2">
             <label className="text-sm text-gray-600">模型名称</label>
             <Select
@@ -353,21 +372,23 @@ export default function LogsPage() {
           </div>
           <div className="flex flex-col gap-2">
             <label className="text-sm text-gray-600">时间范围</label>
-            <DatePicker.RangePicker
-              showTime
-              className="w-full"
-              onChange={(dates) => {
-                if (dates && dates[0] && dates[1]) {
-                  setCustomRange([dates[0].format("YYYY-MM-DD HH:mm:ss"), dates[1].format("YYYY-MM-DD HH:mm:ss")]);
-                  setTimeRange("custom");
-                } else {
-                  setCustomRange(null);
-                  setTimeRange("24h");
-                }
-                setPage(1);
+            <ConfigProvider locale={zhCN}>
+              <DatePicker.RangePicker
+                showTime
+                className="w-full"
+                onChange={(dates) => {
+                  if (dates && dates[0] && dates[1]) {
+                    setCustomRange([dates[0].format("YYYY-MM-DD HH:mm:ss"), dates[1].format("YYYY-MM-DD HH:mm:ss")]);
+                    setTimeRange("custom");
+                  } else {
+                    setCustomRange(null);
+                    setTimeRange("24h");
+                  }
+                  setPage(1);
               }}
               placeholder={["开始时间", "结束时间"]}
             />
+            </ConfigProvider>
           </div>
         </div>
       )}
@@ -379,13 +400,29 @@ export default function LogsPage() {
           <div className="flex flex-col md:flex-row items-start md:items-center justify-between space-y-4 md:space-y-0 w-full max-w-full box-border">
             <div className="flex flex-wrap items-center gap-3 w-full max-w-full box-border">
               <div className="flex items-center gap-2 min-w-0 flex-shrink">
-                <Select
-                  value={timeRange}
-                  onChange={(v) => { setTimeRange(v); setCustomRange(null); setPage(1); }}
-                  style={{ width: 160 }}
-                  options={TIME_OPTIONS}
-                  size="middle"
-                />
+                <div className="flex items-center gap-1">
+                  {timeRange === "custom" ? (
+                    <>
+                      <span className="text-sm text-gray-700 px-2 py-1 bg-gray-100 rounded-md">
+                        {getTimeLabel()}
+                      </span>
+                      <button
+                        onClick={() => { setCustomRange(null); setTimeRange("24h"); setPage(1); }}
+                        className="text-xs text-blue-500 hover:text-blue-700 underline"
+                      >
+                        切换
+                      </button>
+                    </>
+                  ) : (
+                    <Select
+                      value={timeRange}
+                      onChange={(v) => { setTimeRange(v); setCustomRange(null); setPage(1); }}
+                      style={{ width: 160 }}
+                      options={TIME_OPTIONS}
+                      size="middle"
+                    />
+                  )}
+                </div>
 
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-medium text-gray-900">自动刷新</span>

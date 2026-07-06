@@ -21,10 +21,9 @@ use self::parser::UsageStats;
 /// 上游请求超时
 const UPSTREAM_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// 转发到上游的安全请求头
+/// 转发给上游的安全请求头（不转发 accept-encoding，让 reqwest 自动解压）
 const FORWARD_HEADERS: &[&str] = &[
     "accept",
-    "accept-encoding",
     "x-request-id",
     "x-stainless-os",
     "x-stainless-arch",
@@ -73,6 +72,75 @@ impl EndpointKind {
 fn extract_messages_json(body: &serde_json::Value) -> Option<String> {
     body.get("messages")
         .and_then(|m| serde_json::to_string(m).ok())
+}
+
+/// 将 SSE 流式响应解析为标准 JSON 值（兼容某些提供商在 stream=false 时返回 SSE 格式）
+fn parse_sse_as_value(response_text: &str) -> Option<serde_json::Value> {
+    // 检查是否是 SSE 格式（以 "data:" 开头）
+    let has_sse = response_text.lines().any(|l| l.trim_start().starts_with("data:"));
+    if !has_sse {
+        return None;
+    }
+
+    let mut content = String::new();
+    let mut reasoning = String::new();
+    let mut model = String::new();
+    let mut usage = serde_json::json!({});
+    let mut found_any = false;
+
+    for line in response_text.lines() {
+        let line = line.trim();
+        if !line.starts_with("data:") {
+            continue;
+        }
+        let data = line[5..].trim();
+        if data == "[DONE]" {
+            continue;
+        }
+        if let Ok(chunk) = serde_json::from_str::<serde_json::Value>(data) {
+            found_any = true;
+            if let Some(delta) = chunk["choices"][0].get("delta") {
+                if let Some(c) = delta.get("content").and_then(|v| v.as_str()) {
+                    content.push_str(c);
+                }
+                if let Some(r) = delta.get("reasoning_content").and_then(|v| v.as_str()) {
+                    reasoning.push_str(r);
+                }
+            }
+            if let Some(m) = chunk.get("model").and_then(|v| v.as_str()) {
+                if model.is_empty() {
+                    model = m.to_string();
+                }
+            }
+            if let Some(u) = chunk.get("usage") {
+                if u.get("total_tokens").and_then(|v| v.as_u64()).unwrap_or(0) > 0 {
+                    usage = u.clone();
+                }
+            }
+        }
+    }
+
+    if !found_any {
+        return None;
+    }
+
+    // 构建标准 OpenAI 格式的 JSON 响应
+    let message = if !reasoning.is_empty() {
+        serde_json::json!({"content": content, "reasoning": reasoning})
+    } else {
+        serde_json::json!({"content": content})
+    };
+
+    Some(serde_json::json!({
+        "id": "sse-parsed",
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "message": message,
+            "finish_reason": "stop"
+        }],
+        "usage": usage,
+    }))
 }
 
 /// 代理请求的错误类型
@@ -151,6 +219,7 @@ pub async fn proxy_request(
                 api_base: String::new(),
                 source_tag: parse_source_tag(
                     headers.get("user-agent").and_then(|v| v.to_str().ok()).unwrap_or(""),
+                    headers.get("x-source").and_then(|v| v.to_str().ok()).unwrap_or(""),
                 ).to_string(),
                 start_time: start_time.clone(),
                 end_time: chrono::Utc::now().to_rfc3339(),
@@ -181,6 +250,7 @@ pub async fn proxy_request(
                 api_base: model_config.api_base.clone(),
                 source_tag: parse_source_tag(
                     headers.get("user-agent").and_then(|v| v.to_str().ok()).unwrap_or(""),
+                    headers.get("x-source").and_then(|v| v.to_str().ok()).unwrap_or(""),
                 ).to_string(),
                 start_time: start_time.clone(),
                 end_time: chrono::Utc::now().to_rfc3339(),
@@ -226,7 +296,11 @@ pub async fn proxy_request(
         .get("user-agent")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    let source_tag = parse_source_tag(user_agent).to_string();
+    let x_source = headers
+        .get("x-source")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let source_tag = parse_source_tag(user_agent, x_source).to_string();
 
     let is_stream = upstream_body
         .get("stream")
@@ -279,7 +353,7 @@ pub async fn proxy_request(
             // 记录错误日志
             let log_entry = RequestLogEntry {
                 id: uuid::Uuid::new_v4().to_string(),
-                model_name: model_name.clone(),
+                model_name: model_config.model_name.clone(),
                 provider: model_config.provider.clone(),
                 api_base: model_config.api_base.clone(),
                 source_tag: source_tag.clone(),
@@ -316,17 +390,42 @@ pub async fn proxy_request(
     };
     tracing::info!("上游响应 status={} len={} preview={}", status_code.as_u16(), response_text.len(), preview);
 
-    let response_body: serde_json::Value = serde_json::from_str(&response_text)
-        .map_err(|e| {
+    let response_body: serde_json::Value = match serde_json::from_str::<serde_json::Value>(&response_text) {
+        Ok(v) => v,
+        Err(e) => {
             if !status_code.is_success() {
-                ProxyError::UpstreamError(
-                    format!("上游返回 {}: {}", status_code.as_u16(), &response_text[..response_text.len().min(500)]),
-                    None,
-                )
-            } else {
-                ProxyError::ParseError(format!("响应 JSON 解析失败: {}", e))
+                // 非 200 响应且无法解析 JSON —— 先写日志再返回错误
+                let db = state.db.clone();
+                let err_detail = format!("上游返回 {}: {}", status_code.as_u16(), &response_text[..response_text.len().min(500)]);
+                let log_entry = RequestLogEntry {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    model_name: model_config.model_name.clone(),
+                    provider: model_config.provider.clone(),
+                    api_base: model_config.api_base.clone(),
+                    source_tag: source_tag.clone(),
+                    start_time: start_time.clone(),
+                    end_time: chrono::Utc::now().to_rfc3339(),
+                    completion_start_time: Some(completion_start_time.clone()),
+                    duration_ms: start.elapsed().as_millis() as i64,
+                    total_tokens: 0, prompt_tokens: 0, completion_tokens: 0,
+                    cache_hit: false, cache_key: None, cached_tokens: 0,
+                    spend: 0.0,
+                    status: "error".into(),
+                    messages: extract_messages_json(&body),
+                    response: Some(response_text.clone()),
+                    error_msg: Some(err_detail.clone()),
+                    tokens_per_second: 0.0,
+                };
+                tokio::spawn(async move { write_request_log(&db, &log_entry).await.ok(); });
+                return Err(ProxyError::UpstreamError(err_detail, None));
             }
-        })?;
+            // 尝试解析 SSE 流式格式（某些提供商在 stream=false 时也返回 SSE）
+            match parse_sse_as_value(&response_text) {
+                Some(v) => v,
+                None => return Err(ProxyError::ParseError(format!("响应 JSON 解析失败: {}", e))),
+            }
+        }
+    };
 
     let end_time = chrono::Utc::now().to_rfc3339();
     let duration_ms = start.elapsed().as_millis() as i64;
@@ -345,11 +444,11 @@ pub async fn proxy_request(
 
     // 异步写入日志和统计（非流式）
     let db = state.db.clone();
-    let mn = model_name.clone();
+    let mn = model_config.model_name.clone();
     let st = source_tag.clone();
     let log_entry = RequestLogEntry {
         id: uuid::Uuid::new_v4().to_string(),
-        model_name: model_name.clone(),
+        model_name: model_config.model_name.clone(),
         provider: model_config.provider.clone(),
         api_base: model_config.api_base.clone(),
         source_tag: source_tag.clone(),
@@ -375,7 +474,7 @@ pub async fn proxy_request(
         write_request_log(&db, &log_entry).await.ok();
         update_daily_stats(&db, &mn, &st, usage.total_tokens as i64,
             usage.prompt_tokens as i64, usage.completion_tokens as i64,
-            usage.cache_hit, usage.cached_tokens as i64, spend).await.ok();
+            usage.cache_hit, usage.cached_tokens as i64, spend, !success).await.ok();
     });
 
     Ok(Response::builder()
@@ -394,7 +493,7 @@ async fn proxy_stream_request(
     body: serde_json::Value,
     model_config: ModelConfigFull,
     api_key: String,
-    model_name: String,
+    _model_name: String,
     source_tag: String,
     start_time: String,
     start: Instant,
@@ -423,7 +522,7 @@ async fn proxy_stream_request(
             // 记录错误日志
             let log_entry = RequestLogEntry {
                 id: uuid::Uuid::new_v4().to_string(),
-                model_name: model_name.clone(),
+                model_name: model_config.model_name.clone(),
                 provider: model_config.provider.clone(),
                 api_base: model_config.api_base.clone(),
                 source_tag: source_tag.clone(),
@@ -454,7 +553,7 @@ async fn proxy_stream_request(
             .unwrap_or_else(|_| "Unknown error".into());
 
         let db = state.db.clone();
-        let mn = model_name.clone();
+        let mn = model_config.model_name.clone();
         let st = source_tag.clone();
         let end_time = chrono::Utc::now().to_rfc3339();
         let duration_ms = start.elapsed().as_millis() as i64;
@@ -481,14 +580,14 @@ async fn proxy_stream_request(
 
         tokio::spawn(async move {
             write_request_log(&db, &log_entry).await.ok();
-            update_daily_stats(&db, &mn, &st, 0, 0, 0, false, 0, 0.0).await.ok();
+            update_daily_stats(&db, &mn, &st, 0, 0, 0, false, 0, 0.0, true).await.ok();
         });
 
         return Err(ProxyError::UpstreamError(error_body, None));
     }
 
     // 流式转发
-    let model_name_clone = model_name.clone();
+    let model_name_clone = model_config.model_name.clone();
     let provider = model_config.provider.clone();
     let api_base = model_config.api_base.clone();
     let input_price = model_config.input_price;
@@ -514,9 +613,10 @@ async fn proxy_stream_request(
                 let end_time = chrono::Utc::now().to_rfc3339();
                 let duration_ms = start.elapsed().as_millis() as i64;
 
+                let is_error = error_msg.is_some();
                 let (usage, status) = if let Some(ref body) = final_body {
                     let u = parser::parse_usage(&provider, body);
-                    let s = if error_msg.is_some() { "error" } else { "success" };
+                    let s = if is_error { "error" } else { "success" };
                     (u, s)
                 } else {
                     (UsageStats::default(), "error")
@@ -566,6 +666,7 @@ async fn proxy_stream_request(
                     usage.cache_hit,
                     usage.cached_tokens as i64,
                     spend,
+                    is_error,
                 ).await.ok();
             }
         },

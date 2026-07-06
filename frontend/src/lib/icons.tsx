@@ -30,6 +30,7 @@ const modelFaviconMap: Record<string, string> = {
 
 // 来源图标
 const sourceFaviconMap: Record<string, string> = {
+  transparentllm: appPath("/favicon.svg"),
   copilot: appPath("/favicons/github_com.png"),
   github: appPath("/favicons/github_com.png"),
   node: appPath("/favicons/nodejs_org.png"),

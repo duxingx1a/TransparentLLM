@@ -73,10 +73,8 @@ export default function SettingsPage() {
   }
 
   return (
-    <div>
-      <Title level={4} style={{ marginBottom: 24 }}>
-        系统设置
-      </Title>
+    <div className="w-full p-6 overflow-x-hidden box-border">
+      <h1 className="text-xl font-semibold mb-6">系统设置</h1>
 
       {/* 版本信息 */}
       <Card style={{ marginBottom: 24 }}>

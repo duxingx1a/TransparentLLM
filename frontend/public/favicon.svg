@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <defs>
+    <linearGradient id="glass" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#60A5FA"/>
+      <stop offset="50%" stop-color="#3B82F6"/>
+      <stop offset="100%" stop-color="#2563EB"/>
+    </linearGradient>
+    <linearGradient id="shine" x1="0" y1="0" x2="32" y2="48" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="white" stop-opacity="0.5"/>
+      <stop offset="100%" stop-color="white" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="shadow" x="-4" y="-2" width="72" height="72">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#2563EB" flood-opacity="0.3"/>
+    </filter>
+  </defs>
+  <!-- 背景圆角方形 -->
+  <rect x="4" y="4" width="56" height="56" rx="14" fill="url(#glass)" filter="url(#shadow)"/>
+  <!-- 玻璃光泽层 -->
+  <rect x="4" y="4" width="56" height="56" rx="14" fill="url(#shine)"/>
+  <!-- 字母 T -->
+  <path d="M16 16h32v5H34v27h-4V21H16z" fill="white" fill-opacity="0.95"/>
+  <!-- 小装饰点 -->
+  <circle cx="44" cy="44" r="3" fill="white" fill-opacity="0.4"/>
+</svg>

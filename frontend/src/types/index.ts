@@ -68,6 +68,7 @@ export interface RequestLogItem {
   cache_hit: string | null;
   spend: number;
   status: "success" | "error";
+  error_msg?: string | null;
   tokens_per_second: number;
 }
 
@@ -79,6 +80,9 @@ export interface RequestLogDetail extends RequestLogItem {
   cache_key: string | null;
   messages: ChatMessage[] | null;
   response_text: string | null;
+  thinking_text?: string | null;
+  reply_text?: string | null;
+  response?: any;
   error_msg: string | null;
   created_at: string;
   tokens_per_second: number;
@@ -121,15 +125,20 @@ export interface LogListResponse {
 export interface DashboardOverview {
   today: {
     total_requests: number;
+    failed_requests: number;
     total_tokens: number;
     prompt_tokens?: number;
     completion_tokens?: number;
-    cache_tokens?: number;
+    cached_tokens?: number;
     total_spend: number;
   };
   total: {
     total_requests: number;
+    failed_requests: number;
     total_tokens: number;
+    prompt_tokens: number;
+    completion_tokens: number;
+    cached_tokens: number;
     total_spend: number;
   };
   top_models: Array<{
@@ -142,6 +151,7 @@ export interface DashboardOverview {
     source_tag: string;
     requests: number;
     tokens: number;
+    cached_tokens: number;
   }>;
   daily_trend: Array<{
     date: string;
@@ -155,6 +165,15 @@ export interface DashboardOverview {
     requests: number;
     tokens: number;
     spend: number;
+    cached_tokens: number;
+  }>;
+  daily_by_source: Array<{
+    date: string;
+    source_tag: string;
+    requests: number;
+    tokens: number;
+    spend: number;
+    cached_tokens: number;
   }>;
 }
 
@@ -175,17 +194,53 @@ export interface DailyStat {
 
 /** Playground 请求体 */
 export interface PlaygroundRequest {
-  message: string;
+  model_name: string;
+  messages: Array<{ role: string; content: string }>;
   stream: boolean;
+  temperature?: number;
+  max_tokens?: number;
+  endpoint_type?: string;
+  system_prompt?: string;
+  compare_models?: string[];
 }
 
 /** Playground 非流式响应 */
 export interface PlaygroundResponse {
   success: boolean;
   content?: string;
-  total_tokens?: number;
-  prompt_tokens?: number;
-  completion_tokens?: number;
+  model?: string;
+  usage?: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+  };
+  duration_ms?: number;
+  error?: string;
+  raw_response?: any;
+}
+
+/** Playground 流式响应 chunk */
+export interface PlaygroundStreamChunk {
+  content?: string;
+  reasoning_content?: string;
+  finish_reason?: string | null;
+  usage?: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+  };
+}
+
+/** 对比模式单个结果 */
+export interface CompareResult {
+  model_name: string;
+  success: boolean;
+  content?: string;
+  usage?: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+  };
   duration_ms?: number;
   error?: string;
 }

@@ -16,6 +16,43 @@ use serde::{Deserialize, Serialize};
 
 use crate::AppState;
 
+/// 从 OpenAI 格式的响应中提取回复文本（兼容 content / reasoning / reasoning_content）
+fn extract_reply_text(json: &serde_json::Value) -> String {
+    let msg = match json.get("choices").and_then(|c| c.get(0)).and_then(|c| c.get("message")) {
+        Some(m) => m,
+        None => return String::new(),
+    };
+    // 优先取 content
+    if let Some(text) = msg.get("content").and_then(|v| v.as_str()) {
+        if !text.is_empty() { return text.to_string(); }
+    }
+    // 尝试 reasoning 字段
+    for field in &["reasoning", "reasoning_content"] {
+        if let Some(text) = msg.get(*field).and_then(|v| v.as_str()) {
+            if !text.is_empty() { return text.to_string(); }
+        }
+    }
+    String::new()
+}
+
+/// 从响应中分别提取「思考过程」和「最终回复」
+fn extract_thinking_and_reply(json: &serde_json::Value) -> (String, String) {
+    let msg = match json.get("choices").and_then(|c| c.get(0)).and_then(|c| c.get("message")) {
+        Some(m) => m,
+        None => return (String::new(), String::new()),
+    };
+    // 思考过程：优先 reasoning，再 reasoning_content
+    let thinking = ["reasoning", "reasoning_content"].iter().find_map(|&f| {
+        msg.get(f).and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string())
+    }).unwrap_or_default();
+    // 最终回复：content
+    let reply = msg.get("content").and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .unwrap_or_default();
+    (thinking, reply)
+}
+
 pub fn management_routes() -> Router<Arc<AppState>> {
     Router::new()
         // 认证
@@ -29,6 +66,7 @@ pub fn management_routes() -> Router<Arc<AppState>> {
             get(get_model).put(update_model).delete(delete_model),
         )
         .route("/api/models/:id/test", post(test_model))
+        .route("/api/models/recalculate-spend", post(recalculate_spend))
         // 提供商管理
         .route("/api/providers", get(list_providers).post(create_provider))
         .route(
@@ -75,6 +113,18 @@ async fn list_models(
                         &state.config.encryption_key,
                     )
                     .unwrap_or_default();
+                }
+                // 如果 api_key 是占位符，替换为提供商的真实 key
+                if model.decrypted_api_key == "auto-from-provider" {
+                    if let Ok(Some(prov)) = crate::models::get_provider_by_name(
+                        &state.db, &model.provider,
+                    ).await {
+                        model.decrypted_api_key = crate::models::decrypt_api_key(
+                            &prov.encrypted_api_key,
+                            &state.config.encryption_key,
+                        )
+                        .unwrap_or_default();
+                    }
                 }
             }
             Json(ModelListResponse { models }).into_response()
@@ -150,8 +200,17 @@ async fn update_model(
     if let Err(resp) = crate::auth::middleware::check_auth(&state, &headers) {
         return resp;
     }
+    // 检查是否有价格字段变更
+    let price_changed = req.input_price.is_some() || req.output_price.is_some() || req.cache_price.is_some();
     match crate::models::update_model(&state.db, &id, req, &state.config.encryption_key).await {
-        Ok(Some(model)) => Json(model).into_response(),
+        Ok(Some(model)) => {
+            // 价格变更时自动重算历史日志花费
+            if price_changed {
+                let db = state.db.clone();
+                tokio::spawn(async move { do_recalculate_spend(&db).await; });
+            }
+            Json(model).into_response()
+        }
         Ok(None) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "模型不存在"})),
@@ -231,6 +290,100 @@ async fn test_model(
         Ok(response) => response,
         Err(e) => e.into_response(),
     }
+}
+
+/// POST /api/models/recalculate-spend — 价格变更后重新计算所有日志的花费
+///
+/// 遍历所有 request_logs，根据当前模型价格重新计算 spend 字段，
+/// 同时更新 daily_stats 聚合表。
+/// 核心重算逻辑（被 update_model 和 recalculate_spend 共用）
+async fn do_recalculate_spend(db: &sqlx::PgPool) {
+    // 1. 获取所有模型的当前价格
+    let models = crate::models::list_models(db).await.unwrap_or_default();
+    let price_map: std::collections::HashMap<String, (f64, f64, f64)> = models
+        .into_iter()
+        .map(|m| (m.model_name.clone(), (m.input_price, m.output_price, m.cache_price)))
+        .collect();
+
+    // 2. 清空 daily_stats，稍后重建
+    sqlx::query("DELETE FROM daily_stats").execute(db).await.ok();
+
+    // 3. 修正 request_logs 中的 model_name（去掉 provider 前缀）
+    sqlx::query(
+        "UPDATE request_logs SET model_name = regexp_replace(model_name, '^[^-]+-', '') \
+         WHERE regexp_replace(model_name, '^[^-]+-', '') IN (SELECT model_name FROM models)"
+    )
+    .execute(db)
+    .await
+    .ok();
+
+    // 4. 重新计算每条 request_logs 的 spend
+    let logs = sqlx::query_as::<_, (String, String, String, i64, i64, i64, i64, i32, String, String, String, String, String, f64)>(
+        "SELECT id, model_name, provider, prompt_tokens, completion_tokens, cached_tokens, total_tokens, cache_hit, source_tag, start_time, end_time, completion_start_time, status, spend FROM request_logs"
+    )
+    .fetch_all(db)
+    .await
+    .unwrap_or_default();
+
+    for (id, model_name, _provider, prompt_tokens, completion_tokens, cached_tokens, _total_tokens, cache_hit, source_tag, start_time, _end_time, _completion_start_time, _status, _old_spend) in &logs {
+        let new_spend = if let Some((input_price, output_price, cache_price)) = price_map.get(model_name) {
+            let uncached = (*prompt_tokens as f64) - (*cached_tokens as f64);
+            let uncached = uncached.max(0.0);
+            (uncached / 1_000_000.0) * input_price
+                + (*cached_tokens as f64 / 1_000_000.0) * *cache_price
+                + (*completion_tokens as f64 / 1_000_000.0) * output_price
+        } else {
+            0.0
+        };
+
+        sqlx::query("UPDATE request_logs SET spend = $1 WHERE id = $2")
+            .bind(new_spend)
+            .bind(id)
+            .execute(db)
+            .await
+            .ok();
+
+        let date = &start_time[..10];
+        let cache_hit_bool = *cache_hit != 0;
+        sqlx::query(
+            "INSERT INTO daily_stats (date, model_name, source_tag, total_requests, total_tokens, prompt_tokens, completion_tokens, cache_hits, cached_tokens, total_spend, failed_requests) \
+             VALUES ($1, $2, $3, 1, $8, $4, $5, $6::bigint, $7, $9, 0) \
+             ON CONFLICT (date, model_name, source_tag) DO UPDATE SET \
+             total_requests = daily_stats.total_requests + 1, \
+             total_tokens = daily_stats.total_tokens + EXCLUDED.total_tokens, \
+             prompt_tokens = daily_stats.prompt_tokens + EXCLUDED.prompt_tokens, \
+             completion_tokens = daily_stats.completion_tokens + EXCLUDED.completion_tokens, \
+             cache_hits = daily_stats.cache_hits + EXCLUDED.cache_hits, \
+             cached_tokens = daily_stats.cached_tokens + EXCLUDED.cached_tokens, \
+             total_spend = daily_stats.total_spend + EXCLUDED.total_spend"
+        )
+        .bind(date)
+        .bind(&model_name)
+        .bind(&source_tag)
+        .bind(prompt_tokens)
+        .bind(completion_tokens)
+        .bind(if cache_hit_bool { 1i64 } else { 0i64 })
+        .bind(cached_tokens)
+        .bind(prompt_tokens + completion_tokens)
+        .bind(new_spend)
+        .execute(db)
+        .await
+        .ok();
+    }
+}
+
+async fn recalculate_spend(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(resp) = crate::auth::middleware::check_auth(&state, &headers) {
+        return resp;
+    }
+    do_recalculate_spend(&state.db).await;
+    Json(serde_json::json!({
+        "success": true,
+        "message": "已重新计算所有日志的花费"
+    })).into_response()
 }
 
 // ── Playground ──
@@ -331,10 +484,7 @@ async fn playground_chat(
             let body_str = String::from_utf8_lossy(&body_bytes);
 
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body_str) {
-                let content = json["choices"][0]["message"]["content"]
-                    .as_str()
-                    .or_else(|| json["choices"][0]["message"]["reasoning"].as_str())
-                    .unwrap_or("");
+                let content = extract_reply_text(&json);
                 let usage = &json["usage"];
                 return Json(serde_json::json!({
                     "success": true,
@@ -383,10 +533,12 @@ async fn playground_compare(
                 let body_bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024).await.unwrap_or_default();
                 let body_str = String::from_utf8_lossy(&body_bytes);
                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body_str) {
+                    // 提取回复内容（兼容 content / reasoning / reasoning_content）
+                    let content = extract_reply_text(&json);
                     results.push(serde_json::json!({
                         "model_name": model_name,
                         "success": true,
-                        "content": json["choices"][0]["message"]["content"].as_str().unwrap_or(""),
+                        "content": content,
                         "usage": json["usage"],
                         "duration_ms": duration_ms,
                     }));
@@ -452,6 +604,7 @@ struct LogRow {
     cache_hit: i32,
     spend: f64,
     status: String,
+    error_msg: Option<String>,
     tokens_per_second: f64,
 }
 
@@ -499,8 +652,10 @@ async fn list_logs(
     // 分页数据
     let query_sql = format!(
         "SELECT id, model_name, provider, source_tag, start_time, end_time, duration_ms, \
-         CAST((julianday(completion_start_time) - julianday(start_time)) * 86400000 AS INTEGER) as ttft_ms, \
-         total_tokens, prompt_tokens, completion_tokens, cached_tokens, cache_hit, spend, status, tokens_per_second \
+         CASE WHEN completion_start_time IS NOT NULL AND completion_start_time != '' \
+           THEN (EXTRACT(EPOCH FROM (completion_start_time::timestamptz - start_time::timestamptz)) * 1000)::BIGINT \
+           ELSE NULL END as ttft_ms, \
+         total_tokens, prompt_tokens, completion_tokens, cached_tokens, cache_hit, spend, status, error_msg, tokens_per_second \
          FROM request_logs WHERE {} ORDER BY created_at DESC LIMIT {} OFFSET {}",
         where_clause, page_size, offset
     );
@@ -544,19 +699,25 @@ struct LogDetailRow {
     cache_key: Option<String>,
     spend: f64,
     status: String,
-    messages: Option<serde_json::Value>,
-    response: Option<serde_json::Value>,
+    messages: Option<String>,
+    response: Option<String>,
     error_msg: Option<String>,
-    created_at: String,
+    created_at: chrono::DateTime<chrono::Utc>,
     tokens_per_second: f64,
 }
 
 async fn get_log_detail(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if let Err(resp) = crate::auth::middleware::check_auth(&state, &headers) {
+        return resp;
+    }
     let log = sqlx::query_as::<_, LogDetailRow>(
-        "SELECT *, CAST((julianday(completion_start_time) - julianday(start_time)) * 86400000 AS INTEGER) as ttft_ms FROM request_logs WHERE id = ?1"
+        "SELECT *, CASE WHEN completion_start_time IS NOT NULL AND completion_start_time != '' \
+           THEN (EXTRACT(EPOCH FROM (completion_start_time::timestamptz - start_time::timestamptz)) * 1000)::BIGINT \
+           ELSE NULL END as ttft_ms FROM request_logs WHERE id = $1"
     )
     .bind(&id)
     .fetch_optional(&state.db)
@@ -564,22 +725,21 @@ async fn get_log_detail(
 
     match log {
         Ok(Some(row)) => {
+            // 解析 messages（TEXT → JSON）
+            let messages: Option<serde_json::Value> = row.messages.as_ref().and_then(|s| serde_json::from_str(s).ok());
             // 兼容旧数据：messages 可能是完整请求体对象 {messages:[...], model:...}
-            let messages = match &row.messages {
+            let messages = match &messages {
                 Some(serde_json::Value::Object(obj)) if obj.contains_key("messages") => {
                     obj.get("messages").cloned()
                 }
                 other => other.clone(),
             };
-            // 从响应中提取文本内容（兼容流式 delta 和非流式 message）
-            let response_text = row.response.as_ref().and_then(|r| {
-                // 先尝试非流式格式：choices[0].message.content
-                if let Some(text) = r.get("choices")?.get(0)?.get("message")?.get("content")?.as_str() {
-                    return Some(text.to_string());
-                }
-                // 再尝试流式格式：choices[0].delta.content
-                r.get("choices")?.get(0)?.get("delta")?.get("content")?.as_str().map(|s| s.to_string())
-            });
+            // 解析 response（TEXT → JSON）
+            let response: Option<serde_json::Value> = row.response.as_ref().and_then(|s| serde_json::from_str(s).ok());
+            // 从响应中提取思考过程和最终回复
+            let (thinking_text, reply_text) = response.as_ref().map(|r| extract_thinking_and_reply(r)).unwrap_or_default();
+            // response_text = 思考 + 回复（向后兼容）
+            let response_text = if thinking_text.is_empty() { reply_text.clone() } else if reply_text.is_empty() { thinking_text.clone() } else { format!("{}\n\n---\n\n{}", thinking_text, reply_text) };
             Json(serde_json::json!({
                 "id": row.id,
                 "model_name": row.model_name,
@@ -600,10 +760,12 @@ async fn get_log_detail(
                 "spend": row.spend,
                 "status": row.status,
                 "messages": messages,
-                "response": row.response,
+                "response": response,
                 "response_text": response_text,
+                "thinking_text": thinking_text,
+                "reply_text": reply_text,
                 "error_msg": row.error_msg,
-                "created_at": row.created_at,
+                "created_at": row.created_at.to_rfc3339(),
                 "tokens_per_second": row.tokens_per_second,
             })).into_response()
         }
@@ -624,6 +786,8 @@ async fn get_log_detail(
 struct StatsQueryParams {
     #[serde(default = "default_days")]
     days: u32,
+    from: Option<String>,
+    to: Option<String>,
 }
 
 fn default_days() -> u32 { 30 }
@@ -644,6 +808,10 @@ struct StatsRow {
 /// GET /api/stats/overview — 仪表盘总览
 ///
 /// 返回：今日统计、总计统计、按模型分组、按来源分组、每日趋势
+///
+/// 性能优化：
+/// - 全部使用 daily_stats 聚合表，不再扫描 request_logs（2.3GB）
+/// - 聚合查询走 PRIMARY KEY(date, model_name, source_tag)
 async fn get_stats_overview(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -653,48 +821,58 @@ async fn get_stats_overview(
     }
     let db = &state.db;
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let today_end = (chrono::Utc::now() + chrono::Duration::days(1)).format("%Y-%m-%d").to_string();
+    let t0 = std::time::Instant::now();
 
-    // 今日统计（从 request_logs 实时计算）
-    let today_stats: (i64, i64, i64, i64, i64, f64) = sqlx::query_as(
-        "SELECT COALESCE(COUNT(*),0), COALESCE(SUM(total_tokens),0), \
-                COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(completion_tokens),0), \
-                COALESCE(SUM(cached_tokens),0), COALESCE(SUM(spend),0) \
-         FROM request_logs WHERE date(created_at) = ?1"
+    // ── 以下全部从 daily_stats 聚合表获取，不再查询 request_logs ──
+
+    // 今日统计（从 daily_stats 筛选今日日期）
+    let today_stats: (i64, i64, i64, i64, i64, f64, i64) = sqlx::query_as(
+        "SELECT COALESCE(SUM(total_requests),0)::bigint, COALESCE(SUM(total_tokens),0)::bigint, \
+                COALESCE(SUM(prompt_tokens),0)::bigint, COALESCE(SUM(completion_tokens),0)::bigint, \
+                COALESCE(SUM(cached_tokens),0)::bigint, COALESCE(SUM(total_spend),0)::float8, \
+                COALESCE(SUM(failed_requests),0)::bigint \
+         FROM daily_stats WHERE date >= $1 AND date < $2"
     )
     .bind(&today)
+    .bind(&today_end)
     .fetch_one(db)
     .await
-    .unwrap_or((0, 0, 0, 0, 0, 0.0));
+    .map_err(|e| tracing::error!("today_stats query error: {}", e))
+    .unwrap_or((0, 0, 0, 0, 0, 0.0, 0));
 
     // 总计统计（从 daily_stats 汇总）
     let total_stats: (i64, i64, i64, i64, i64, f64, i64) = sqlx::query_as(
-        "SELECT COALESCE(SUM(total_requests),0), COALESCE(SUM(total_tokens),0), \
-                COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(completion_tokens),0), \
-                COALESCE(SUM(cached_tokens),0), COALESCE(SUM(total_spend),0), COALESCE(SUM(cache_hits),0) \
+        "SELECT COALESCE(SUM(total_requests),0)::bigint, COALESCE(SUM(total_tokens),0)::bigint, \
+                COALESCE(SUM(prompt_tokens),0)::bigint, COALESCE(SUM(completion_tokens),0)::bigint, \
+                COALESCE(SUM(cached_tokens),0)::bigint, COALESCE(SUM(total_spend),0)::float8, \
+                COALESCE(SUM(failed_requests),0)::bigint \
          FROM daily_stats"
     )
     .fetch_one(db)
     .await
+    .map_err(|e| tracing::error!("total_stats query error: {}", e))
     .unwrap_or((0, 0, 0, 0, 0, 0.0, 0));
 
     // 按模型分组（Top 10）
     #[derive(sqlx::FromRow)]
     struct ModelGroup { model_name: String, requests: i64, tokens: i64, spend: f64 }
     let by_model: Vec<ModelGroup> = sqlx::query_as(
-        "SELECT model_name, SUM(total_requests) as requests, SUM(total_tokens) as tokens, \
+        "SELECT model_name, SUM(total_requests)::bigint as requests, SUM(total_tokens)::bigint as tokens, \
                 SUM(total_spend) as spend \
          FROM daily_stats GROUP BY model_name ORDER BY tokens DESC LIMIT 10"
     )
     .fetch_all(db)
     .await
+    .map_err(|e| tracing::error!("by_model query error: {}", e))
     .unwrap_or_default();
 
     // 按来源分组（含 tokens 和 spend）
     #[derive(sqlx::FromRow)]
-    struct SourceGroup { source_tag: String, requests: i64, tokens: i64, spend: f64 }
+    struct SourceGroup { source_tag: String, requests: i64, tokens: i64, spend: f64, cached_tokens: i64 }
     let by_source: Vec<SourceGroup> = sqlx::query_as(
-        "SELECT source_tag, SUM(total_requests) as requests, SUM(total_tokens) as tokens, \
-                SUM(total_spend) as spend \
+        "SELECT source_tag, SUM(total_requests)::bigint as requests, SUM(total_tokens)::bigint as tokens, \
+                SUM(total_spend) as spend, SUM(cached_tokens)::bigint as cached_tokens \
          FROM daily_stats GROUP BY source_tag ORDER BY requests DESC"
     )
     .fetch_all(db)
@@ -710,7 +888,7 @@ async fn get_stats_overview(
         spend: f64,
     }
     let daily_trend: Vec<DailyTrend> = sqlx::query_as(
-        "SELECT date, SUM(total_requests) as requests, SUM(total_tokens) as tokens, \
+        "SELECT date, SUM(total_requests)::bigint as requests, SUM(total_tokens)::bigint as tokens, \
                 SUM(total_spend) as spend \
          FROM daily_stats GROUP BY date ORDER BY date ASC LIMIT 30"
     )
@@ -726,25 +904,46 @@ async fn get_stats_overview(
         requests: i64,
         tokens: i64,
         spend: f64,
+        cached_tokens: i64,
     }
     let daily_by_model: Vec<DailyByModel> = sqlx::query_as(
-        "SELECT date, model_name, SUM(total_requests) as requests, SUM(total_tokens) as tokens, \
-                SUM(total_spend) as spend \
+        "SELECT date, model_name, SUM(total_requests)::bigint as requests, SUM(total_tokens)::bigint as tokens, \
+                SUM(total_spend) as spend, SUM(cached_tokens)::bigint as cached_tokens \
          FROM daily_stats GROUP BY date, model_name ORDER BY date ASC"
     )
     .fetch_all(db)
     .await
     .unwrap_or_default();
 
-    // 今日模型分布
+    // 每日趋势 — 按来源分组（来源排行按时间过滤用）
+    #[derive(sqlx::FromRow, Serialize)]
+    struct DailyBySource {
+        date: String,
+        source_tag: String,
+        requests: i64,
+        tokens: i64,
+        spend: f64,
+        cached_tokens: i64,
+    }
+    let daily_by_source: Vec<DailyBySource> = sqlx::query_as(
+        "SELECT date, source_tag, SUM(total_requests)::bigint as requests, SUM(total_tokens)::bigint as tokens, \
+                SUM(total_spend) as spend, SUM(cached_tokens)::bigint as cached_tokens \
+         FROM daily_stats GROUP BY date, source_tag ORDER BY date ASC"
+    )
+    .fetch_all(db)
+    .await
+    .unwrap_or_default();
+
+    // 今日模型分布（从 daily_stats 聚合）
     #[derive(sqlx::FromRow)]
     struct TodayModel { model_name: String, cnt: i64, tokens: i64 }
     let today_models: Vec<TodayModel> = sqlx::query_as(
-        "SELECT model_name, COUNT(*) as cnt, SUM(total_tokens) as tokens \
-         FROM request_logs WHERE date(created_at) = ?1 \
+        "SELECT model_name, SUM(total_requests)::bigint as cnt, SUM(total_tokens)::bigint as tokens \
+         FROM daily_stats WHERE date >= $1 AND date < $2 \
          GROUP BY model_name ORDER BY cnt DESC LIMIT 5"
     )
     .bind(&today)
+    .bind(&today_end)
     .fetch_all(db)
     .await
     .unwrap_or_default();
@@ -752,6 +951,7 @@ async fn get_stats_overview(
     Json(serde_json::json!({
         "today": {
             "total_requests": today_stats.0,
+            "failed_requests": today_stats.6,
             "total_tokens": today_stats.1,
             "prompt_tokens": today_stats.2,
             "completion_tokens": today_stats.3,
@@ -761,12 +961,13 @@ async fn get_stats_overview(
         },
         "total": {
             "total_requests": total_stats.0,
+            "failed_requests": total_stats.6,
             "total_tokens": total_stats.1,
             "prompt_tokens": total_stats.2,
             "completion_tokens": total_stats.3,
             "cached_tokens": total_stats.4,
             "total_spend": (total_stats.5 * 10000.0).round() / 10000.0,
-            "total_cache_hits": total_stats.6,
+            "total_cache_hits": 0,
             "currency": "CNY",
         },
         "top_models": by_model.iter().map(|m| serde_json::json!({
@@ -779,10 +980,12 @@ async fn get_stats_overview(
             "source_tag": s.source_tag,
             "requests": s.requests,
             "tokens": s.tokens,
+            "cached_tokens": s.cached_tokens,
             "spend": (s.spend * 10000.0).round() / 10000.0,
         })).collect::<Vec<_>>(),
         "daily_trend": daily_trend,
         "daily_by_model": daily_by_model,
+        "daily_by_source": daily_by_source,
         "today_models": today_models.iter().map(|m| serde_json::json!({
             "model_name": m.model_name,
             "requests": m.cnt,
@@ -804,17 +1007,33 @@ async fn get_stats_daily(
         return resp;
     }
     let db = &state.db;
-    let days = params.days.min(365); // 最多 365 天
 
-    let daily: Vec<StatsRow> = sqlx::query_as(
-        "SELECT date, model_name, source_tag, total_requests, total_tokens, \
-         prompt_tokens, completion_tokens, cache_hits, total_spend \
-         FROM daily_stats ORDER BY date DESC LIMIT ?1"
-    )
-    .bind(days as i64)
-    .fetch_all(db)
-    .await
-    .unwrap_or_default();
+    // 支持 from/to 日期范围筛选，或 fallback 到 days 参数
+    let daily: Vec<StatsRow> = if let (Some(ref from), Some(ref to)) = (&params.from, &params.to) {
+        sqlx::query_as(
+            "SELECT date, model_name, source_tag, total_requests, total_tokens, \
+             prompt_tokens, completion_tokens, cache_hits, total_spend \
+             FROM daily_stats WHERE date >= $1 AND date <= $2 ORDER BY date DESC"
+        )
+        .bind(from)
+        .bind(to)
+        .fetch_all(db)
+        .await
+        .unwrap_or_default()
+    } else {
+        let days = params.days.min(365);
+        // 计算起始日期，按日期范围过滤而不是用 LIMIT（LIMIT 会限制行数而非天数）
+        sqlx::query_as(
+            "SELECT date, model_name, source_tag, total_requests, total_tokens, \
+             prompt_tokens, completion_tokens, cache_hits, total_spend \
+             FROM daily_stats WHERE date >= (CURRENT_DATE - ($1 || ' days')::interval)::text \
+             ORDER BY date DESC"
+        )
+        .bind(days as i64)
+        .fetch_all(db)
+        .await
+        .unwrap_or_default()
+    };
 
     let total_requests: i64 = daily.iter().map(|r| r.total_requests).sum();
     let total_tokens: i64 = daily.iter().map(|r| r.total_tokens).sum();
@@ -913,7 +1132,7 @@ async fn update_settings(
         if days < 1 || days > 365 {
             return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "保留天数需在 1-365 之间"}))).into_response();
         }
-        if let Err(e) = sqlx::query("INSERT OR REPLACE INTO settings (key, value) VALUES ('log_retention_days', ?1)")
+        if let Err(e) = sqlx::query("INSERT INTO settings (key, value) VALUES ('log_retention_days', $1) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value")
             .bind(days.to_string())
             .execute(&state.db).await
         {
@@ -927,7 +1146,7 @@ async fn update_settings(
         let old_key = req.old_master_key.unwrap_or_default();
         if !state.auth.has_master_key() || state.auth.verify_master_key(&old_key) {
             let new_hash = crate::crypto::sha256_hash(&new_key);
-            if let Err(e) = sqlx::query("INSERT OR REPLACE INTO settings (key, value) VALUES ('master_key_hash', ?1)")
+            if let Err(e) = sqlx::query("INSERT INTO settings (key, value) VALUES ('master_key_hash', $1) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value")
                 .bind(&new_hash)
                 .execute(&state.db).await
             {

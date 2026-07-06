@@ -3,7 +3,7 @@
 //! 负责请求日志写入和定期清理
 
 use chrono::Utc;
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 
 /// 请求日志记录
 #[derive(Debug)]
@@ -32,7 +32,7 @@ pub struct RequestLogEntry {
 }
 
 /// 写入请求日志
-pub async fn write_request_log(db: &SqlitePool, entry: &RequestLogEntry) -> anyhow::Result<()> {
+pub async fn write_request_log(db: &PgPool, entry: &RequestLogEntry) -> anyhow::Result<()> {
     sqlx::query(
         r#"
         INSERT INTO request_logs (
@@ -42,11 +42,11 @@ pub async fn write_request_log(db: &SqlitePool, entry: &RequestLogEntry) -> anyh
             cache_hit, cache_key, cached_tokens, spend, status,
             messages, response, error_msg, tokens_per_second, created_at
         ) VALUES (
-            ?1, ?2, ?3, ?4, ?5,
-            ?6, ?7, ?8, ?9,
-            ?10, ?11, ?12,
-            ?13, ?14, ?15, ?16, ?17,
-            ?18, ?19, ?20, ?21, datetime('now')
+            $1, $2, $3, $4, $5,
+            $6, $7, $8, $9,
+            $10, $11, $12,
+            $13, $14, $15, $16, $17,
+            $18, $19, $20, $21, NOW()
         )
         "#,
     )
@@ -79,7 +79,7 @@ pub async fn write_request_log(db: &SqlitePool, entry: &RequestLogEntry) -> anyh
 
 /// 更新每日统计（upsert）
 pub async fn update_daily_stats(
-    db: &SqlitePool,
+    db: &PgPool,
     model_name: &str,
     source_tag: &str,
     total_tokens: i64,
@@ -88,24 +88,27 @@ pub async fn update_daily_stats(
     cache_hit: bool,
     cached_tokens: i64,
     spend: f64,
+    is_error: bool,
 ) -> anyhow::Result<()> {
     let today = Utc::now().format("%Y-%m-%d").to_string();
     let cache_hit_int = if cache_hit { 1 } else { 0 };
+    let failed_int = if is_error { 1 } else { 0 };
 
     sqlx::query(
         r#"
         INSERT INTO daily_stats (date, model_name, source_tag, total_requests,
                                  total_tokens, prompt_tokens, completion_tokens,
-                                 cache_hits, cached_tokens, total_spend)
-        VALUES (?1, ?2, ?3, 1, ?4, ?5, ?6, ?7, ?8, ?9)
+                                 cache_hits, cached_tokens, total_spend, failed_requests)
+        VALUES ($1, $2, $3, 1, $4, $5, $6, $7, $8, $9, $10)
         ON CONFLICT(date, model_name, source_tag) DO UPDATE SET
-            total_requests = total_requests + 1,
-            total_tokens = total_tokens + ?4,
-            prompt_tokens = prompt_tokens + ?5,
-            completion_tokens = completion_tokens + ?6,
-            cache_hits = cache_hits + ?7,
-            cached_tokens = cached_tokens + ?8,
-            total_spend = total_spend + ?9
+            total_requests = daily_stats.total_requests + 1,
+            total_tokens = daily_stats.total_tokens + EXCLUDED.total_tokens,
+            prompt_tokens = daily_stats.prompt_tokens + EXCLUDED.prompt_tokens,
+            completion_tokens = daily_stats.completion_tokens + EXCLUDED.completion_tokens,
+            cache_hits = daily_stats.cache_hits + EXCLUDED.cache_hits,
+            cached_tokens = daily_stats.cached_tokens + EXCLUDED.cached_tokens,
+            total_spend = daily_stats.total_spend + EXCLUDED.total_spend,
+            failed_requests = daily_stats.failed_requests + EXCLUDED.failed_requests
         "#,
     )
     .bind(&today)
@@ -117,6 +120,7 @@ pub async fn update_daily_stats(
     .bind(cache_hit_int)
     .bind(cached_tokens)
     .bind(spend)
+    .bind(failed_int)
     .execute(db)
     .await?;
 
@@ -126,7 +130,7 @@ pub async fn update_daily_stats(
 /// 启动日志清理任务
 ///
 /// 每 6 小时清理一次超过保留天数的日志
-pub fn start_cleanup_task(db: SqlitePool, retention_days: i64) {
+pub fn start_cleanup_task(db: PgPool, retention_days: i64) {
     tokio::spawn(async move {
         // 启动时立即清理一次
         cleanup_expired_logs(&db, retention_days).await;
@@ -140,11 +144,11 @@ pub fn start_cleanup_task(db: SqlitePool, retention_days: i64) {
 }
 
 /// 清理过期日志
-async fn cleanup_expired_logs(db: &SqlitePool, retention_days: i64) {
+async fn cleanup_expired_logs(db: &PgPool, retention_days: i64) {
     let result = sqlx::query(
-        "DELETE FROM request_logs WHERE created_at < datetime('now', ?1)",
+        "DELETE FROM request_logs WHERE created_at < NOW() - ($1 || ' days')::interval",
     )
-    .bind(format!("-{} days", retention_days))
+    .bind(retention_days)
     .execute(db)
     .await;
 

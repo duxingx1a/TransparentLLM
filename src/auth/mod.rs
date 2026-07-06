@@ -5,7 +5,7 @@
 
 pub mod middleware;
 
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 
 use crate::config::AppConfig;
 
@@ -19,11 +19,12 @@ impl AuthState {
     /// 初始化鉴权状态
     ///
     /// 优先级：环境变量（可选覆盖）> 数据库 > 默认值 "admin"
-    pub async fn new(db: &SqlitePool, config: &AppConfig) -> anyhow::Result<Self> {
+    pub async fn new(db: &PgPool, config: &AppConfig) -> anyhow::Result<Self> {
         let master_key_hash = if let Some(ref h) = config.master_key_hash {
             // 环境变量中设置了主 Key → 写入数据库
             sqlx::query(
-                "INSERT OR REPLACE INTO settings (key, value) VALUES ('master_key_hash', ?1)",
+                "INSERT INTO settings (key, value) VALUES ('master_key_hash', $1)
+                 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
             )
             .bind(h)
             .execute(db)
@@ -46,7 +47,7 @@ impl AuthState {
                     // 数据库也没有 → 使用默认值 "admin"
                     let default_hash = crate::crypto::sha256_hash("admin");
                     sqlx::query(
-                        "INSERT INTO settings (key, value) VALUES ('master_key_hash', ?1)",
+                        "INSERT INTO settings (key, value) VALUES ('master_key_hash', $1)",
                     )
                     .bind(&default_hash)
                     .execute(db)
@@ -77,7 +78,7 @@ impl AuthState {
     /// 更新主 Key（需要旧的 Key 验证）
     pub async fn update_master_key(
         &mut self,
-        db: &SqlitePool,
+        db: &PgPool,
         old_key: &str,
         new_key: &str,
     ) -> Result<bool, String> {
@@ -87,7 +88,7 @@ impl AuthState {
 
         let new_hash = crate::crypto::sha256_hash(new_key);
 
-        sqlx::query("INSERT OR REPLACE INTO settings (key, value) VALUES ('master_key_hash', ?1)")
+        sqlx::query("INSERT INTO settings (key, value) VALUES ('master_key_hash', $1) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value")
             .bind(&new_hash)
             .execute(db)
             .await

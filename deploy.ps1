@@ -5,7 +5,7 @@
 param(
     [string]$Server = "ydl-server_new",
     [string]$RemoteDir = "/root/ydl-projects/transparentllm",
-    [string]$Key = "bf2899b73b3373cd09b84d8017ef9455"
+    [string]$Key = "12345678901234567890123456789012"
 )
 
 $ErrorActionPreference = "Stop"
@@ -18,7 +18,7 @@ wsl -u root service docker start 2>&1 | Out-Null
 # 1. 编译前端
 Write-Host "=== 1/4 编译前端 ===" -ForegroundColor Cyan
 Push-Location $PSScriptRoot\frontend
-npm run build
+$env:NEXT_PUBLIC_API_BASE=""; npm run build
 Pop-Location
 
 # 2. 编译后端 Linux 二进制 + 构建 Docker 镜像

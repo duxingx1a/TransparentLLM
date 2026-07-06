@@ -9,7 +9,7 @@ pub struct AppConfig {
     pub host: String,
     /// 监听端口，默认 18400
     pub port: u16,
-    /// SQLite 数据库连接字符串
+    /// PostgreSQL 数据库连接字符串
     pub database_url: String,
     /// 主密钥（SHA-256 哈希存储）
     pub master_key_hash: Option<String>,
@@ -48,7 +48,7 @@ impl AppConfig {
                 .and_then(|p| p.parse().ok())
                 .unwrap_or(18400),
             database_url: std::env::var("TRANSPARENTLLM_DATABASE_URL")
-                .unwrap_or_else(|_| "sqlite:data/transparentllm.db?mode=rwc".into()),
+                .unwrap_or_else(|_| "postgres://ydl:870304@localhost:5432/transparentllm".into()),
             master_key_hash: master_key.map(|k| {
                 use sha2::{Digest, Sha256};
                 hex::encode(Sha256::digest(k.as_bytes()))

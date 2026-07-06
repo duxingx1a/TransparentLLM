@@ -4,13 +4,11 @@ services:
     container_name: transparentllm
     expose:
       - "18400"
-    volumes:
-      - ./data:/app/data
     environment:
       - TRANSPARENTLLM_ENCRYPTION_KEY=change-me-to-32-byte-secret-key!!
       - TRANSPARENTLLM_HOST=0.0.0.0
       - TRANSPARENTLLM_PORT=18400
-      - TRANSPARENTLLM_DATABASE_URL=sqlite:/app/data/transparentllm.db?mode=rwc
+      - TRANSPARENTLLM_DATABASE_URL=postgres://ydl:870304@8.137.187.63:18432/transparentllm?sslmode=disable
       - TRANSPARENTLLM_LOG_RETENTION_DAYS=30
     restart: unless-stopped
     healthcheck:
@@ -18,9 +16,33 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+    depends_on:
+      transparentllm-pg:
+        condition: service_healthy
     networks:
       - default
       - nginx-net
+
+  transparentllm-pg:
+    image: postgres:16-alpine
+    container_name: transparentllm-pg
+    environment:
+      - POSTGRES_USER=tlm
+      - POSTGRES_PASSWORD=tlm_secret_2024
+      - POSTGRES_DB=transparentllm
+    volumes:
+      - transparentllm-pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tlm -d transparentllm"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - default
+
+volumes:
+  transparentllm-pgdata:
 
 networks:
   nginx-net:

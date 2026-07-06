@@ -33,8 +33,9 @@ where
         let mut completion_start_time: Option<String> = None;
         let mut error_msg: Option<String> = None;
         let mut first_content_chunk = true;
-        // 累积流式回复的完整内容
-        let mut accumulated_content = String::new();
+        // 分别累积思考过程和最终回复
+        let mut accumulated_thinking = String::new();
+        let mut accumulated_reply = String::new();
 
         use futures_util::StreamExt;
         while let Some(chunk_result) = stream.next().await {
@@ -51,7 +52,7 @@ where
                         }
                     }
 
-                    // 累积 delta.content
+                    // 累积 delta.content / delta.reasoning / delta.reasoning_content
                     if let Ok(text) = std::str::from_utf8(&bytes) {
                         for line in text.lines() {
                             if let Some(json_str) = line.strip_prefix("data: ") {
@@ -63,8 +64,23 @@ where
                                         .and_then(|c| c.get(0))
                                         .and_then(|c| c.get("delta"))
                                     {
+                                        // 优先取 content（最终回复）
                                         if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
-                                            accumulated_content.push_str(content);
+                                            if !content.is_empty() {
+                                                accumulated_reply.push_str(content);
+                                            }
+                                        }
+                                        // 尝试 reasoning_content（DeepSeek 思考）
+                                        if let Some(text) = delta.get("reasoning_content").and_then(|c| c.as_str()) {
+                                            if !text.is_empty() {
+                                                accumulated_thinking.push_str(text);
+                                            }
+                                        }
+                                        // 尝试 reasoning（GLM-5.2 思考）
+                                        if let Some(text) = delta.get("reasoning").and_then(|c| c.as_str()) {
+                                            if !text.is_empty() {
+                                                accumulated_thinking.push_str(text);
+                                            }
                                         }
                                     }
                                 }
@@ -104,17 +120,34 @@ where
                     .last()
             });
 
-        // 将累积的完整内容注入到响应体中，便于日志记录
-        if !accumulated_content.is_empty() {
+        // 将累积的内容注入到响应体中，便于日志记录
+        if !accumulated_thinking.is_empty() || !accumulated_reply.is_empty() {
             if let Some(ref mut body) = parsed_body {
                 if let Some(choices) = body.get_mut("choices") {
-                    if let Some(first) = choices.get_mut(0) {
-                        // 设置 message.content（非流式格式），便于详情页提取
+                    if choices.as_array().map_or(true, |a| a.is_empty()) {
+                        // choices 为空，创建新元素
+                        let mut msg = serde_json::json!({
+                            "role": "assistant",
+                        });
+                        if !accumulated_reply.is_empty() {
+                            msg["content"] = serde_json::Value::String(accumulated_reply);
+                        }
+                        if !accumulated_thinking.is_empty() {
+                            msg["reasoning"] = serde_json::Value::String(accumulated_thinking);
+                        }
+                        *choices = serde_json::json!([{
+                            "index": 0,
+                            "message": msg,
+                        }]);
+                    } else if let Some(first) = choices.get_mut(0) {
                         first.as_object_mut().and_then(|obj| {
-                            obj.insert("message".into(), serde_json::json!({
-                                "role": "assistant",
-                                "content": accumulated_content,
-                            }))
+                            if !accumulated_reply.is_empty() {
+                                obj.insert("content".into(), serde_json::json!(accumulated_reply));
+                            }
+                            if !accumulated_thinking.is_empty() {
+                                obj.insert("reasoning".into(), serde_json::json!(accumulated_thinking));
+                            }
+                            Some(())
                         });
                     }
                 }

@@ -53,8 +53,17 @@ async function request<T>(
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    const err = (body as ApiError).error || `HTTP ${res.status}`;
-    throw new Error(err);
+    // 后端返回的 error 可能是字符串，也可能是嵌套对象 {message, type, code}
+    let errStr = `HTTP ${res.status}`;
+    const rawErr = (body as any).error;
+    if (typeof rawErr === "string") {
+      errStr = rawErr;
+    } else if (typeof rawErr === "object" && rawErr !== null) {
+      errStr = rawErr.message || rawErr.detail || JSON.stringify(rawErr);
+    } else if (rawErr) {
+      errStr = String(rawErr);
+    }
+    throw new Error(errStr);
   }
 
   return res.json();
@@ -111,6 +120,13 @@ export const modelsApi = {
       method: "POST",
       body: JSON.stringify(data),
     }),
+
+  /** 价格变更后重新计算所有日志的花费 */
+  recalculateSpend: () =>
+    request<{ success: boolean; updated_logs: number; message: string }>(
+      "/api/models/recalculate-spend",
+      { method: "POST" }
+    ),
 };
 
 // ========== 提供商 API ==========
@@ -163,7 +179,7 @@ export const statsApi = {
       if (v) searchParams.set(k, v);
     });
     const qs = searchParams.toString();
-    return request<{ stats: DailyStat[] }>(`/api/stats/daily${qs ? `?${qs}` : ""}`);
+    return request<{ daily: DailyStat[] }>(`/api/stats/daily${qs ? `?${qs}` : ""}`);
   },
 };
 
@@ -203,6 +219,89 @@ export const settingsApi = {
 export const sourceTagsApi = {
   /** 获取所有来源标签 */
   list: () => request<{ tags: SourceTag[] }>("/api/source-tags"),
+};
+
+// ========== Playground API ==========
+
+export const playgroundApi = {
+  /** 发送聊天消息（非流式） */
+  chat: (data: PlaygroundRequest) =>
+    request<PlaygroundResponse>("/api/playground/chat", {
+      method: "POST",
+      body: JSON.stringify(data),
+      headers: { "X-Source": "TransparentLLM" } as Record<string, string>,
+    }),
+
+  /** 发送聊天消息（流式） */
+  chatStream: async function* (
+    data: PlaygroundRequest,
+    signal?: AbortSignal
+  ): AsyncGenerator<{ content?: string; reasoning_content?: string; reasoning?: string; usage?: any; done?: boolean }> {
+    const token = typeof window !== "undefined" ? localStorage.getItem("master_key") : null;
+    // 流式请求必须直接访问后端，绕过 Next.js rewrites（它会缓冲 SSE）
+    const streamBase = process.env.NEXT_PUBLIC_API_BASE || "http://127.0.0.1:18400";
+    const res = await fetch(`${streamBase}/api/playground/chat`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Source": "TransparentLLM",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ ...data, stream: true }),
+      signal,
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(text || `HTTP ${res.status}`);
+    }
+
+    const reader = res.body?.getReader();
+    if (!reader) throw new Error("无法读取响应流");
+
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || !trimmed.startsWith("data:")) continue;
+        const payload = trimmed.slice(5).trim();
+        if (payload === "[DONE]") {
+          yield { done: true };
+          return;
+        }
+        try {
+          const json = JSON.parse(payload);
+          const delta = json.choices?.[0]?.delta;
+          if (delta) {
+            yield {
+              content: delta.content || undefined,
+              reasoning_content: delta.reasoning_content || undefined,
+              reasoning: delta.reasoning || undefined,
+              done: json.choices?.[0]?.finish_reason != null,
+            };
+          }
+          if (json.usage) {
+            yield { usage: json.usage };
+          }
+        } catch {
+          // skip malformed chunks
+        }
+      }
+    }
+  },
+
+  /** 获取可用端点列表 */
+  endpoints: () =>
+    request<Array<{ id: string; name: string; path: string }>>("/api/playground/endpoints"),
 };
 
 export default {

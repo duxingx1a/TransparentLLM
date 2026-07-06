@@ -16,14 +16,15 @@ import {
   MenuUnfoldOutlined,
 } from "@ant-design/icons";
 import { useAuth } from "@/contexts/AuthContext";
+import PageTransition from "./PageTransition";
 
 const { Sider, Content } = Layout;
 const { Text } = Typography;
 
 const menuItems = [
   { key: "/dashboard", icon: <BarChartOutlined />, label: "用量总览" },
-  { key: "/models", icon: <BlockOutlined />, label: "模型管理" },
   { key: "/providers", icon: <CloudServerOutlined />, label: "提供商管理" },
+  { key: "/models", icon: <BlockOutlined />, label: "模型管理" },
   { key: "/playground", icon: <ExperimentOutlined />, label: "Playground" },
   { key: "/logs", icon: <LineChartOutlined />, label: "请求日志" },
   { key: "/settings", icon: <SettingOutlined />, label: "系统设置" },
@@ -119,7 +120,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       <Layout style={{ marginLeft: collapsed ? 80 : 220, transition: "margin-left 0.2s", background: "#fff" }}>
         <Content style={{ margin: 24, background: "#fff" }}>
           <div style={{ minHeight: "calc(100vh - 48px)" }}>
-            {children}
+            <PageTransition>{children}</PageTransition>
           </div>
         </Content>
       </Layout>

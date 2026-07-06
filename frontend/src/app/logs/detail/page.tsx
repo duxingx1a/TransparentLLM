@@ -28,7 +28,7 @@ function LogDetailContent() {
   const router = useRouter();
   const id = searchParams.get("id") || "";
 
-  const { data, isLoading } = useQuery<RequestLogDetail>({
+  const { data, isLoading, error } = useQuery<RequestLogDetail>({
     queryKey: ["log-detail", id],
     queryFn: () => logsApi.detail(id),
     enabled: !!id,
@@ -36,10 +36,11 @@ function LogDetailContent() {
 
   if (!id) return <Empty description="缺少日志 ID" />;
   if (isLoading) return <div style={{ textAlign: "center", padding: 100 }}><Spin size="large" /></div>;
+  if (error) return <Empty description={`加载失败：${error.message}`} />;
   if (!data) return <Empty description="日志不存在" />;
 
   return (
-    <div>
+    <div className="w-full p-6 box-border">
       {/* 固定顶部返回栏 */}
       <div
         style={{
@@ -89,16 +90,43 @@ function LogDetailContent() {
       </Card>
 
       {data.messages && data.messages.length > 0 && (() => {
-        // 将 AI 回复追加到消息列表末尾，形成完整的对话流
-        const conversation = [...data.messages];
-        if (data.response_text) {
-          conversation.push({ role: "assistant" as const, content: data.response_text });
+        // 构建对话流：用户消息 + 思考过程 + 最终回复
+        const conversation: Array<{ role: string; content: string; type?: string }> = data.messages.map((m) => ({ role: m.role, content: m.content }));
+
+        // 优先使用后端拆分的 thinking_text / reply_text
+        let thinkingText = data.thinking_text || "";
+        let replyText = data.reply_text || "";
+
+        // 兼容旧数据：从 response 中提取
+        if (!thinkingText && !replyText && data.response) {
+          try {
+            const resp = typeof data.response === "string" ? JSON.parse(data.response) : data.response;
+            const msg = resp?.choices?.[0]?.message;
+            if (msg) {
+              replyText = msg.content || "";
+              thinkingText = msg.reasoning || msg.reasoning_content || "";
+              if (!replyText && thinkingText) { replyText = ""; }
+            }
+          } catch { /* ignore */ }
+        }
+
+        if (thinkingText) {
+          conversation.push({ role: "assistant", content: thinkingText, type: "thinking" });
+        }
+        if (replyText) {
+          conversation.push({ role: "assistant", content: replyText, type: "reply" });
+        } else if (!thinkingText && data.response_text) {
+          conversation.push({ role: "assistant", content: data.response_text });
         }
         return (
           <Card title="对话记录" style={{ marginBottom: 16 }}>
             {conversation.map((msg, index) => {
               const isLastMessage = index === conversation.length - 1;
               const isAssistant = msg.role === "assistant";
+              const isThinking = (msg as any).type === "thinking";
+              const isReply = (msg as any).type === "reply";
+              const bgColor = isThinking ? "#fffbe6" : msg.role === "user" ? "#e6f4ff" : isReply ? "#f6ffed" : "#fafafa";
+              const borderColor = isThinking ? "#ffe58f" : msg.role === "user" ? "#91caff" : isAssistant ? "#b7eb8f" : "#d9d9d9";
               return (
                 <div
                   key={index}
@@ -106,14 +134,16 @@ function LogDetailContent() {
                     marginBottom: 12,
                     padding: "10px 14px",
                     borderRadius: 8,
-                    background: msg.role === "user" ? "#e6f4ff" : msg.role === "assistant" ? "#f6ffed" : "#fafafa",
-                    border: `1px solid ${msg.role === "user" ? "#91caff" : msg.role === "assistant" ? "#b7eb8f" : "#d9d9d9"}`,
+                    background: bgColor,
+                    border: `1px solid ${borderColor}`,
                   }}
                 >
                   <div style={{ marginBottom: 4 }}>
                     {msg.role === "system" && <Space><SettingOutlined /><Text strong>System</Text></Space>}
                     {msg.role === "user" && <Space><UserOutlined /><Text strong>User</Text></Space>}
-                    {msg.role === "assistant" && <Space><RobotOutlined /><Text strong>Assistant {isLastMessage && data.response_text ? <Tag color="green" style={{ marginLeft: 4 }}>AI 回复</Tag> : null}</Text></Space>}
+                    {isAssistant && isThinking && <Space><RobotOutlined /><Text strong style={{ color: "#d48806" }}>思考过程</Text> <Tag color="warning" style={{ marginLeft: 4 }}>Thinking</Tag></Space>}
+                    {isAssistant && isReply && <Space><RobotOutlined /><Text strong>Assistant</Text> <Tag color="green" style={{ marginLeft: 4 }}>AI 回复</Tag></Space>}
+                    {isAssistant && !isThinking && !isReply && <Space><RobotOutlined /><Text strong>Assistant</Text></Space>}
                   </div>
                   <Paragraph style={{ margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: isLastMessage && isAssistant ? 600 : 300, overflow: "auto" }}>
                     {msg.content}

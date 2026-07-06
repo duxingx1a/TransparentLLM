@@ -3,7 +3,7 @@
 //! 管理上游 LLM 模型的配置信息（CRUD）
 
 use serde::{Deserialize, Serialize};
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 
 use crate::crypto;
 
@@ -74,7 +74,7 @@ pub struct UpdateModelRequest {
 }
 
 /// 获取所有模型
-pub async fn list_models(db: &SqlitePool) -> anyhow::Result<Vec<ModelConfig>> {
+pub async fn list_models(db: &PgPool) -> anyhow::Result<Vec<ModelConfig>> {
     let rows = sqlx::query_as::<_, ModelRow>(
         r#"
         SELECT id, model_name, provider, api_base, input_price, output_price, cache_price,
@@ -89,12 +89,12 @@ pub async fn list_models(db: &SqlitePool) -> anyhow::Result<Vec<ModelConfig>> {
 }
 
 /// 获取单个模型
-pub async fn get_model(db: &SqlitePool, id: &str) -> anyhow::Result<Option<ModelConfig>> {
+pub async fn get_model(db: &PgPool, id: &str) -> anyhow::Result<Option<ModelConfig>> {
     let row = sqlx::query_as::<_, ModelRow>(
         r#"
         SELECT id, model_name, provider, api_base, input_price, output_price, cache_price,
                model_type, created_at, updated_at, encrypted_api_key, upstream_model_name
-        FROM models WHERE id = ?1
+        FROM models WHERE id = $1
         "#,
     )
     .bind(id)
@@ -106,14 +106,14 @@ pub async fn get_model(db: &SqlitePool, id: &str) -> anyhow::Result<Option<Model
 
 /// 按模型名称查找（用于代理路由匹配）
 pub async fn get_model_by_name(
-    db: &SqlitePool,
+    db: &PgPool,
     model_name: &str,
 ) -> anyhow::Result<Option<ModelConfigFull>> {
     let row = sqlx::query_as::<_, ModelRow>(
         r#"
         SELECT id, model_name, provider, api_base, input_price, output_price, cache_price,
                model_type, created_at, updated_at, encrypted_api_key, upstream_model_name
-        FROM models WHERE model_name = ?1
+        FROM models WHERE model_name = $1
         "#,
     )
     .bind(model_name)
@@ -125,7 +125,7 @@ pub async fn get_model_by_name(
 
 /// 按模型名称 + 提供商精确查找（优先匹配，用于代理路由）
 pub async fn get_model_by_name_and_provider(
-    db: &SqlitePool,
+    db: &PgPool,
     model_name: &str,
     provider: &str,
 ) -> anyhow::Result<Option<ModelConfigFull>> {
@@ -133,7 +133,7 @@ pub async fn get_model_by_name_and_provider(
         r#"
         SELECT id, model_name, provider, api_base, input_price, output_price, cache_price,
                model_type, created_at, updated_at, encrypted_api_key, upstream_model_name
-        FROM models WHERE model_name = ?1 AND provider = ?2
+        FROM models WHERE model_name = $1 AND provider = $2
         "#,
     )
     .bind(model_name)
@@ -146,7 +146,7 @@ pub async fn get_model_by_name_and_provider(
 
 /// 创建模型
 pub async fn create_model(
-    db: &SqlitePool,
+    db: &PgPool,
     req: CreateModelRequest,
     encryption_key: &[u8],
 ) -> anyhow::Result<ModelConfig> {
@@ -160,7 +160,7 @@ pub async fn create_model(
         r#"
         INSERT INTO models (id, model_name, provider, api_base, encrypted_api_key,
                            input_price, output_price, cache_price, model_type, upstream_model_name)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         "#,
     )
     .bind(&id)
@@ -183,7 +183,7 @@ pub async fn create_model(
 
 /// 更新模型
 pub async fn update_model(
-    db: &SqlitePool,
+    db: &PgPool,
     id: &str,
     req: UpdateModelRequest,
     encryption_key: &[u8],
@@ -214,11 +214,11 @@ pub async fn update_model(
     sqlx::query(
         r#"
         UPDATE models SET
-            model_name = ?1, provider = ?2, api_base = ?3, encrypted_api_key = ?4,
-            input_price = ?5, output_price = ?6, cache_price = ?7, model_type = ?8,
-            upstream_model_name = ?9,
-            updated_at = datetime('now')
-        WHERE id = ?10
+            model_name = $1, provider = $2, api_base = $3, encrypted_api_key = $4,
+            input_price = $5, output_price = $6, cache_price = $7, model_type = $8,
+            upstream_model_name = $9,
+            updated_at = NOW()
+        WHERE id = $10
         "#,
     )
     .bind(&model_name)
@@ -238,8 +238,8 @@ pub async fn update_model(
 }
 
 /// 删除模型
-pub async fn delete_model(db: &SqlitePool, id: &str) -> anyhow::Result<bool> {
-    let result = sqlx::query("DELETE FROM models WHERE id = ?1")
+pub async fn delete_model(db: &PgPool, id: &str) -> anyhow::Result<bool> {
+    let result = sqlx::query("DELETE FROM models WHERE id = $1")
         .bind(id)
         .execute(db)
         .await?;
@@ -274,8 +274,8 @@ struct ModelRow {
     output_price: f64,
     cache_price: f64,
     model_type: String,
-    created_at: String,
-    updated_at: String,
+    created_at: chrono::DateTime<chrono::Utc>,
+    updated_at: chrono::DateTime<chrono::Utc>,
     encrypted_api_key: Vec<u8>,
     upstream_model_name: String,
 }
@@ -292,8 +292,8 @@ impl ModelRow {
             output_price: self.output_price,
             cache_price: self.cache_price,
             model_type: self.model_type,
-            created_at: self.created_at,
-            updated_at: self.updated_at,
+            created_at: self.created_at.to_rfc3339(),
+            updated_at: self.updated_at.to_rfc3339(),
             has_key,
             encrypted_api_key: self.encrypted_api_key,
             decrypted_api_key: String::new(),
@@ -319,11 +319,11 @@ impl ModelRow {
 }
 
 async fn get_model_by_name_id(
-    db: &SqlitePool,
+    db: &PgPool,
     id: &str,
 ) -> anyhow::Result<Option<ModelConfigFull>> {
     let row = sqlx::query_as::<_, ModelRow>(
-        "SELECT * FROM models WHERE id = ?1",
+        "SELECT * FROM models WHERE id = $1",
     )
     .bind(id)
     .fetch_optional(db)
@@ -368,7 +368,7 @@ pub struct UpdateProviderRequest {
 }
 
 /// 获取所有提供商
-pub async fn list_providers(db: &SqlitePool) -> anyhow::Result<Vec<ProviderRow>> {
+pub async fn list_providers(db: &PgPool) -> anyhow::Result<Vec<ProviderRow>> {
     let rows = sqlx::query_as::<_, ProviderRow>(
         r#"SELECT id, name, api_base, encrypted_api_key, created_at, updated_at
            FROM providers ORDER BY created_at DESC"#,
@@ -380,10 +380,10 @@ pub async fn list_providers(db: &SqlitePool) -> anyhow::Result<Vec<ProviderRow>>
 }
 
 /// 获取单个提供商
-pub async fn get_provider(db: &SqlitePool, id: &str) -> anyhow::Result<Option<ProviderRow>> {
+pub async fn get_provider(db: &PgPool, id: &str) -> anyhow::Result<Option<ProviderRow>> {
     sqlx::query_as::<_, ProviderRow>(
         r#"SELECT id, name, api_base, encrypted_api_key, created_at, updated_at
-           FROM providers WHERE id = ?1"#,
+           FROM providers WHERE id = $1"#,
     )
     .bind(id)
     .fetch_optional(db)
@@ -392,10 +392,10 @@ pub async fn get_provider(db: &SqlitePool, id: &str) -> anyhow::Result<Option<Pr
 }
 
 /// 按名称获取提供商（用于代理路由自动获取 key）
-pub async fn get_provider_by_name(db: &SqlitePool, name: &str) -> anyhow::Result<Option<ProviderRow>> {
+pub async fn get_provider_by_name(db: &PgPool, name: &str) -> anyhow::Result<Option<ProviderRow>> {
     sqlx::query_as::<_, ProviderRow>(
         r#"SELECT id, name, api_base, encrypted_api_key, created_at, updated_at
-           FROM providers WHERE name = ?1"#,
+           FROM providers WHERE name = $1"#,
     )
     .bind(name)
     .fetch_optional(db)
@@ -405,7 +405,7 @@ pub async fn get_provider_by_name(db: &SqlitePool, name: &str) -> anyhow::Result
 
 /// 创建提供商
 pub async fn create_provider(
-    db: &SqlitePool,
+    db: &PgPool,
     req: CreateProviderRequest,
     encryption_key: &[u8],
 ) -> anyhow::Result<ProviderConfig> {
@@ -415,7 +415,7 @@ pub async fn create_provider(
 
     sqlx::query(
         r#"INSERT INTO providers (id, name, api_base, encrypted_api_key)
-           VALUES (?1, ?2, ?3, ?4)"#,
+           VALUES ($1, $2, $3, $4)"#,
     )
     .bind(&id)
     .bind(&req.name)
@@ -435,7 +435,7 @@ pub async fn create_provider(
 
 /// 更新提供商
 pub async fn update_provider(
-    db: &SqlitePool,
+    db: &PgPool,
     id: &str,
     req: UpdateProviderRequest,
     encryption_key: &[u8],
@@ -456,8 +456,8 @@ pub async fn update_provider(
     };
 
     sqlx::query(
-        r#"UPDATE providers SET name = ?1, api_base = ?2, encrypted_api_key = ?3,
-           updated_at = datetime('now') WHERE id = ?4"#,
+        r#"UPDATE providers SET name = $1, api_base = $2, encrypted_api_key = $3,
+           updated_at = NOW() WHERE id = $4"#,
     )
     .bind(&name)
     .bind(&api_base)
@@ -473,8 +473,8 @@ pub async fn update_provider(
 }
 
 /// 删除提供商
-pub async fn delete_provider(db: &SqlitePool, id: &str) -> anyhow::Result<bool> {
-    let result = sqlx::query("DELETE FROM providers WHERE id = ?1")
+pub async fn delete_provider(db: &PgPool, id: &str) -> anyhow::Result<bool> {
+    let result = sqlx::query("DELETE FROM providers WHERE id = $1")
         .bind(id)
         .execute(db)
         .await?;
@@ -490,8 +490,8 @@ pub struct ProviderRow {
     pub name: String,
     pub api_base: String,
     pub encrypted_api_key: Vec<u8>,
-    pub created_at: String,
-    pub updated_at: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
 impl ProviderRow {
@@ -501,8 +501,8 @@ impl ProviderRow {
             name: self.name,
             api_base: self.api_base,
             decrypted_api_key,
-            created_at: self.created_at,
-            updated_at: self.updated_at,
+            created_at: self.created_at.to_rfc3339(),
+            updated_at: self.updated_at.to_rfc3339(),
         }
     }
 }

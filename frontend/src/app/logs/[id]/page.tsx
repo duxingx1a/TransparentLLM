@@ -61,19 +61,17 @@ export default function LogDetailPage() {
   }
 
   return (
-    <div>
-      <Space style={{ marginBottom: 16 }}>
+    <div className="w-full p-6 box-border">
+      <div style={{ position: "sticky", top: 0, zIndex: 10, background: "#fff", paddingBottom: 8, marginBottom: 8 }}>
         <Button
           icon={<ArrowLeftOutlined />}
           onClick={() => router.push("/logs")}
         >
           返回列表
         </Button>
-      </Space>
+      </div>
 
-      <Title level={4} style={{ marginBottom: 24 }}>
-        日志详情
-      </Title>
+      <h1 className="text-xl font-semibold mb-6">日志详情</h1>
 
       {/* 基本信息 */}
       <Card title="基本信息" style={{ marginBottom: 16 }}>
