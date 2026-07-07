@@ -68,10 +68,9 @@ impl EndpointKind {
     }
 }
 
-/// 从请求体中提取 messages 数组（与 LiteLLM 行为对齐）
-fn extract_messages_json(body: &serde_json::Value) -> Option<String> {
-    body.get("messages")
-        .and_then(|m| serde_json::to_string(m).ok())
+/// 保存完整请求体 JSON
+fn extract_request_json(body: &serde_json::Value) -> Option<String> {
+    serde_json::to_string(body).ok()
 }
 
 /// 将 SSE 流式响应解析为标准 JSON 值（兼容某些提供商在 stream=false 时返回 SSE 格式）
@@ -229,7 +228,7 @@ pub async fn proxy_request(
                 cache_hit: false, cache_key: None, cached_tokens: 0,
                 spend: 0.0,
                 status: "error".into(),
-                messages: extract_messages_json(&body),
+                messages: extract_request_json(&body),
                 response: None,
                 error_msg: Some(format!("模型未配置: {}", model_name)),
                 tokens_per_second: 0.0,
@@ -260,7 +259,7 @@ pub async fn proxy_request(
                 cache_hit: false, cache_key: None, cached_tokens: 0,
                 spend: 0.0,
                 status: "error".into(),
-                messages: extract_messages_json(&body),
+                messages: extract_request_json(&body),
                 response: None,
                 error_msg: Some(format!("Key 解密失败: {}", e)),
                 tokens_per_second: 0.0,
@@ -365,7 +364,7 @@ pub async fn proxy_request(
                 cache_hit: false, cache_key: None, cached_tokens: 0,
                 spend: 0.0,
                 status: "error".into(),
-                messages: extract_messages_json(&body),
+                messages: extract_request_json(&body),
                 response: None,
                 error_msg: Some(err_msg.clone()),
                 tokens_per_second: 0.0,
@@ -411,7 +410,7 @@ pub async fn proxy_request(
                     cache_hit: false, cache_key: None, cached_tokens: 0,
                     spend: 0.0,
                     status: "error".into(),
-                    messages: extract_messages_json(&body),
+                    messages: extract_request_json(&body),
                     response: Some(response_text.clone()),
                     error_msg: Some(err_detail.clone()),
                     tokens_per_second: 0.0,
@@ -473,7 +472,7 @@ pub async fn proxy_request(
         cached_tokens: usage.cached_tokens as i64,
         spend,
         status: if success { "success" } else { "error" }.into(),
-        messages: extract_messages_json(&body),
+        messages: extract_request_json(&body),
         response: Some(response_text),
         error_msg: if success { None } else { Some(format!("HTTP {}", status_code.as_u16())) },
         tokens_per_second: tps,
@@ -545,7 +544,7 @@ async fn proxy_stream_request(
                 cache_hit: false, cache_key: None, cached_tokens: 0,
                 spend: 0.0,
                 status: "error".into(),
-                messages: extract_messages_json(&body),
+                messages: extract_request_json(&body),
                 response: None,
                 error_msg: Some(err_msg.clone()),
                 tokens_per_second: 0.0,
@@ -583,7 +582,7 @@ async fn proxy_stream_request(
             cache_hit: false, cache_key: None, cached_tokens: 0,
             spend: 0.0,
             status: "error".into(),
-            messages: extract_messages_json(&body),
+            messages: extract_request_json(&body),
             response: Some(error_body.clone()),
             error_msg: Some(error_body.clone()),
             tokens_per_second: 0.0,
@@ -670,7 +669,7 @@ async fn proxy_stream_request(
                     messages: serde_json::from_str::<serde_json::Value>(&body_json)
                         .ok()
                         .as_ref()
-                        .and_then(|v| extract_messages_json(v)),
+                        .and_then(|v| extract_request_json(v)),
                     response: final_body.as_ref().map(|b| serde_json::to_string(b).unwrap_or_default()),
                     error_msg,
                     tokens_per_second: tps,

@@ -127,91 +127,107 @@ function LogDetailContent() {
         </Descriptions>
       </Card>
 
-      {data.messages && data.messages.length > 0 && (() => {
-        // 构建对话流
-        const conversation: Array<{ role: string; content: string; type?: string }> = data.messages.map((m) => ({
-          role: m.role,
-          content: typeof m.content === "string" ? m.content : JSON.stringify(m.content, null, 2),
-        }));
-
-        let thinkingText = data.thinking_text || "";
-        let replyText = data.reply_text || "";
-        if (!thinkingText && !replyText && data.response) {
-          try {
-            const resp = typeof data.response === "string" ? JSON.parse(data.response) : data.response;
-            const msg = resp?.choices?.[0]?.message;
-            if (msg) {
-              replyText = msg.content || "";
-              thinkingText = msg.reasoning || msg.reasoning_content || "";
-            }
-          } catch { /* ignore */ }
+      {/* 完整请求体 */}
+      {data.messages && (() => {
+        let requestBody: any;
+        try {
+          requestBody = typeof data.messages === "string" ? JSON.parse(data.messages as unknown as string) : data.messages;
+        } catch {
+          requestBody = data.messages;
         }
-        if (thinkingText) conversation.push({ role: "assistant", content: thinkingText, type: "thinking" });
-        if (replyText) conversation.push({ role: "assistant", content: replyText, type: "reply" });
-        else if (!thinkingText && data.response_text) conversation.push({ role: "assistant", content: data.response_text });
+        if (!requestBody) return null;
 
-        // 如果有错误信息也加入对话流
-        if (data.error_msg) {
-          conversation.push({ role: "error", content: data.error_msg, type: "error" });
-        }
+        // 从完整请求体中提取 messages 用于对话展示
+        const rawMessages = requestBody?.messages || (Array.isArray(requestBody) ? requestBody : []);
+        const hasTools = requestBody?.tools && requestBody.tools.length > 0;
+        const systemMsgs = rawMessages.filter((m: any) => m.role === "system");
+        const userMsgs = rawMessages.filter((m: any) => m.role === "user" || m.type === "text");
+        const assistantMsgs = rawMessages.filter((m: any) => m.role === "assistant");
 
         return (
-          <Card title="对话记录" style={{ marginBottom: 16 }}>
-            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              {conversation.map((msg, index) => {
-                const isUser = msg.role === "user";
-                const isSystem = msg.role === "system";
-                const isError = msg.role === "error" || (msg as any).type === "error";
-                const isThinking = (msg as any).type === "thinking";
-                const isReply = (msg as any).type === "reply";
-                const isAssistant = msg.role === "assistant";
+          <>
+            {/* 请求参数卡片 */}
+            <Card title="请求参数" style={{ marginBottom: 16 }}>
+              <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 12 }}>
+                <Tag>模型: {requestBody.model || data.model_name}</Tag>
+                <Tag>流式: {requestBody.stream ? "是" : "否"}</Tag>
+                {requestBody.temperature !== undefined && <Tag>温度: {requestBody.temperature}</Tag>}
+                {requestBody.max_tokens !== undefined && <Tag>最大Token: {requestBody.max_tokens}</Tag>}
+                {hasTools && <Tag color="blue">工具: {requestBody.tools.length} 个</Tag>}
+                {requestBody.system && <Tag color="purple">系统提示词</Tag>}
+              </div>
+              <CollapsibleMessage defaultCollapsed>
+                <div style={{
+                  background: "#f6f8fa", borderRadius: 8, padding: 12,
+                  fontSize: 12, lineHeight: 1.6, color: "#333",
+                  maxHeight: 500, overflow: "auto",
+                  whiteSpace: "pre-wrap", wordBreak: "break-word",
+                  fontFamily: "monospace",
+                  contentVisibility: "auto",
+                }}>
+                  {JSON.stringify(requestBody, null, 2)}
+                </div>
+              </CollapsibleMessage>
+            </Card>
 
-                // 用户消息：靠右，宽度 15%~100%
-                // 模型/system/error 消息：靠左，宽度 0%~85%
-                return (
-                  <div key={index} style={{ display: "flex", justifyContent: isUser ? "flex-end" : "flex-start" }}>
-                    <div style={{
-                      maxWidth: isUser ? "85%" : "85%",
-                      padding: "10px 14px",
-                      borderRadius: 12,
-                      borderTopRightRadius: isUser ? 4 : 12,
-                      borderTopLeftRadius: isUser ? 12 : 4,
-                      background: isError ? "#fff2f0" : isThinking ? "#fffbe6" : isReply ? "#f6ffed" : isUser ? "#e6f4ff" : isSystem ? "#f5f5f5" : "#fafafa",
-                      border: `1px solid ${isError ? "#ffccc7" : isThinking ? "#ffe58f" : isReply ? "#b7eb8f" : isUser ? "#91caff" : isSystem ? "#d9d9d9" : "#e6e6e6"}`,
-                      boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
-                    }}>
-                      <div style={{ marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
-                        {isUser && <><UserOutlined style={{ color: "#1677ff" }} /><Text strong style={{ fontSize: 12, color: "#1677ff" }}>用户</Text></>}
-                        {isSystem && <><SettingOutlined style={{ color: "#8c8c8c" }} /><Text strong style={{ fontSize: 12, color: "#8c8c8c" }}>System</Text></>}
-                        {isError && <><Text strong style={{ fontSize: 12, color: "#ff4d4f" }}>❌ 错误</Text></>}
-                        {isThinking && <><RobotOutlined style={{ color: "#d48806" }} /><Text strong style={{ fontSize: 12, color: "#d48806" }}>思考过程</Text></>}
-                        {isReply && <><RobotOutlined style={{ color: "#52c41a" }} /><Text strong style={{ fontSize: 12, color: "#52c41a" }}>AI 回复</Text></>}
-                        {isAssistant && !isThinking && !isReply && !isError && <><RobotOutlined style={{ color: "#1677ff" }} /><Text strong style={{ fontSize: 12, color: "#1677ff" }}>Assistant</Text></>}
+            {/* 对话记录 */}
+            <Card title="对话记录" style={{ marginBottom: 16 }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                {rawMessages.map((msg: any, index: number) => {
+                  const role = msg.role || "unknown";
+                  const content = typeof msg.content === "string" ? msg.content
+                    : Array.isArray(msg.content) ? msg.content.map((c: any) => c.text || JSON.stringify(c)).join("\n")
+                    : typeof msg.content === "object" && msg.content !== null ? JSON.stringify(msg.content, null, 2)
+                    : String(msg.content || "");
+                  const isUser = role === "user";
+                  const isSystem = role === "system";
+
+                  return (
+                    <div key={index} style={{ display: "flex", justifyContent: isUser ? "flex-end" : "flex-start" }}>
+                      <div style={{
+                        maxWidth: "85%", padding: "10px 14px", borderRadius: 12,
+                        borderTopRightRadius: isUser ? 4 : 12, borderTopLeftRadius: isUser ? 12 : 4,
+                        background: isUser ? "#e6f4ff" : isSystem ? "#f5f5f5" : "#fafafa",
+                        border: `1px solid ${isUser ? "#91caff" : isSystem ? "#d9d9d9" : "#e6e6e6"}`,
+                        boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
+                      }}>
+                        <div style={{ marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
+                          {isUser && <><UserOutlined style={{ color: "#1677ff" }} /><Text strong style={{ fontSize: 12, color: "#1677ff" }}>用户</Text></>}
+                          {isSystem && <><SettingOutlined style={{ color: "#8c8c8c" }} /><Text strong style={{ fontSize: 12, color: "#8c8c8c" }}>System</Text></>}
+                          {!isUser && !isSystem && <><RobotOutlined style={{ color: "#1677ff" }} /><Text strong style={{ fontSize: 12, color: "#1677ff" }}>{role}</Text></>}
+                        </div>
+                        <CollapsibleMessage defaultCollapsed={isSystem}>
+                          <div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", fontSize: 13, lineHeight: 1.7, color: "#333", contentVisibility: "auto" }}>
+                            {content || <Text type="secondary">(空消息)</Text>}
+                          </div>
+                        </CollapsibleMessage>
                       </div>
-                      <CollapsibleMessage defaultCollapsed={isThinking || isReply || isError}>
-                        <div style={{
-                          whiteSpace: "pre-wrap",
-                          wordBreak: "break-word",
-                          fontSize: 13,
-                          lineHeight: 1.7,
-                          color: isError ? "#ff4d4f" : "#333",
-                          contentVisibility: "auto",
-                          containIntrinsicSize: "0 200px",
-                        }}>
-                          {msg.content}
+                    </div>
+                  );
+                })}
+                {/* 如果没有 messages 但有 response，展示响应 */}
+                {rawMessages.length === 0 && data.response_text && (
+                  <div style={{ display: "flex", justifyContent: "flex-start" }}>
+                    <div style={{ maxWidth: "85%", padding: "10px 14px", borderRadius: 12, background: "#f6ffed", border: "1px solid #b7eb8f" }}>
+                      <div style={{ marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
+                        <RobotOutlined style={{ color: "#52c41a" }} /><Text strong style={{ fontSize: 12, color: "#52c41a" }}>AI 回复</Text>
+                      </div>
+                      <CollapsibleMessage>
+                        <div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", fontSize: 13, lineHeight: 1.7, color: "#333", contentVisibility: "auto" }}>
+                          {data.response_text}
                         </div>
                       </CollapsibleMessage>
                     </div>
                   </div>
-                );
-              })}
-            </div>
-          </Card>
+                )}
+              </div>
+            </Card>
+          </>
         );
       })()}
 
-      {/* 错误信息单独展示（始终显示，不依赖对话流） */}
-      {data.error_msg && data.messages?.length === 0 && (
+      {/* 错误信息单独展示 */}
+      {data.error_msg && (!data.messages || (data.messages as any)?.length === 0) && (
         <Card title="错误信息" style={{ marginBottom: 16, borderColor: "#ff4d4f" }} headStyle={{ borderColor: "#ff4d4f" }}>
           <Text type="danger" style={{ whiteSpace: "pre-wrap" }}>{data.error_msg}</Text>
         </Card>
