@@ -33,16 +33,16 @@ where
         let mut completion_start_time: Option<String> = None;
         let mut error_msg: Option<String> = None;
         let mut first_content_chunk = true;
-        // 分别累积思考过程和最终回复
         let mut accumulated_thinking = String::new();
         let mut accumulated_reply = String::new();
+        // 记录最后一个包含 usage 的 chunk（有些提供商 usage 在最后，有些在中间）
+        let mut last_usage_chunk: Option<serde_json::Value> = None;
 
         use futures_util::StreamExt;
         while let Some(chunk_result) = stream.next().await {
             match chunk_result {
                 Ok(bytes) => {
                     // 记录首个内容 chunk 的时间（TTFT）
-                    // 检查是否有实际的 delta content / reasoning_content
                     if first_content_chunk {
                         if let Ok(text) = std::str::from_utf8(&bytes) {
                             let has_content = text.contains("\"content\"")
@@ -60,27 +60,26 @@ where
                     if let Ok(text) = std::str::from_utf8(&bytes) {
                         for line in text.lines() {
                             if let Some(json_str) = line.strip_prefix("data: ") {
-                                if json_str == "[DONE]" {
-                                    continue;
-                                }
+                                if json_str == "[DONE]" { continue; }
                                 if let Ok(chunk) = serde_json::from_str::<serde_json::Value>(json_str) {
+                                    // 记录包含 usage 的 chunk
+                                    if chunk.get("usage").is_some() {
+                                        last_usage_chunk = Some(chunk.clone());
+                                    }
                                     if let Some(delta) = chunk.get("choices")
                                         .and_then(|c| c.get(0))
                                         .and_then(|c| c.get("delta"))
                                     {
-                                        // 优先取 content（最终回复）
                                         if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
                                             if !content.is_empty() {
                                                 accumulated_reply.push_str(content);
                                             }
                                         }
-                                        // 尝试 reasoning_content（DeepSeek 思考）
                                         if let Some(text) = delta.get("reasoning_content").and_then(|c| c.as_str()) {
                                             if !text.is_empty() {
                                                 accumulated_thinking.push_str(text);
                                             }
                                         }
-                                        // 尝试 reasoning（GLM-5.2 思考）
                                         if let Some(text) = delta.get("reasoning").and_then(|c| c.as_str()) {
                                             if !text.is_empty() {
                                                 accumulated_thinking.push_str(text);
@@ -107,22 +106,21 @@ where
         }
 
         // 尝试解析完整响应体
-        let mut parsed_body = std::str::from_utf8(&full_body)
-            .ok()
-            .and_then(|text| {
-                // 提取最后一个有效的 JSON 行（包含 usage 信息）
-                text.lines()
-                    .filter(|line| line.starts_with("data: "))
-                    .filter_map(|line| {
-                        let json_str = &line[6..]; // 去掉 "data: " 前缀
-                        if json_str == "[DONE]" {
-                            None
-                        } else {
-                            serde_json::from_str::<serde_json::Value>(json_str).ok()
-                        }
-                    })
-                    .last()
-            });
+        // 优先使用包含 usage 的 chunk，其次用最后一个 chunk
+        let mut parsed_body = last_usage_chunk.or_else(|| {
+            std::str::from_utf8(&full_body)
+                .ok()
+                .and_then(|text| {
+                    text.lines()
+                        .filter(|line| line.starts_with("data: "))
+                        .filter_map(|line| {
+                            let json_str = &line[6..];
+                            if json_str == "[DONE]" { None }
+                            else { serde_json::from_str::<serde_json::Value>(json_str).ok() }
+                        })
+                        .last()
+                })
+        });
 
         // 将累积的内容注入到响应体中，便于日志记录
         if !accumulated_thinking.is_empty() || !accumulated_reply.is_empty() {

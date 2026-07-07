@@ -67,13 +67,13 @@ function LogDetailContent() {
           <Descriptions.Item label="来源"><Tag color="blue">{data.source_tag}</Tag></Descriptions.Item>
           <Descriptions.Item label="状态"><Tag color={data.status === "success" ? "green" : "red"}>{data.status}</Tag></Descriptions.Item>
           <Descriptions.Item label="总耗时">{formatDuration(data.duration_ms)}</Descriptions.Item>
-          {data.tokens_per_second > 0 && <Descriptions.Item label="Token/s"><Text strong>{data.tokens_per_second.toFixed(1)}</Text></Descriptions.Item>}
+          {data.completion_start_time && (
+            <Descriptions.Item label="TTFT">{formatDuration(new Date(data.completion_start_time).getTime() - new Date(data.start_time).getTime())}</Descriptions.Item>
+          )}
+          <Descriptions.Item label="速率">{data.tokens_per_second > 0 ? `${data.tokens_per_second.toFixed(1)} t/s` : "-"}</Descriptions.Item>
           <Descriptions.Item label="API 地址">{data.api_base}</Descriptions.Item>
           <Descriptions.Item label="开始时间">{dayjs(data.start_time).format("YYYY-MM-DD HH:mm:ss")}</Descriptions.Item>
           <Descriptions.Item label="结束时间">{dayjs(data.end_time).format("YYYY-MM-DD HH:mm:ss")}</Descriptions.Item>
-          {data.completion_start_time && (
-            <Descriptions.Item label="首 Token 时间">{dayjs(data.completion_start_time).format("YYYY-MM-DD HH:mm:ss")}</Descriptions.Item>
-          )}
         </Descriptions>
       </Card>
 
