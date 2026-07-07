@@ -45,12 +45,17 @@ fn extract_thinking_and_reply(json: &serde_json::Value) -> (String, String) {
     let thinking = ["reasoning", "reasoning_content"].iter().find_map(|&f| {
         msg.get(f).and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string())
     }).unwrap_or_default();
-    // 最终回复：content
+    // 最终回复：优先 content
     let reply = msg.get("content").and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
         .unwrap_or_default();
-    (thinking, reply)
+    // 如果没有 content 但有 reasoning，把 reasoning 同时作为回复显示
+    if reply.is_empty() && !thinking.is_empty() {
+        (thinking.clone(), thinking)
+    } else {
+        (thinking, reply)
+    }
 }
 
 pub fn management_routes() -> Router<Arc<AppState>> {

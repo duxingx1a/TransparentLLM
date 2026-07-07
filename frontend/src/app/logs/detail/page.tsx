@@ -205,10 +205,10 @@ function LogDetailContent() {
                     </div>
                   );
                 })}
-                {/* 如果没有 messages 但有 response，展示响应 */}
-                {rawMessages.length === 0 && data.response_text && (
+                {/* assistant 回复：从 response 中提取，始终显示 */}
+                {data.response_text && (
                   <div style={{ display: "flex", justifyContent: "flex-start" }}>
-                    <div style={{ maxWidth: "85%", padding: "10px 14px", borderRadius: 12, background: "#f6ffed", border: "1px solid #b7eb8f" }}>
+                    <div style={{ maxWidth: "85%", padding: "10px 14px", borderRadius: 12, background: "#f6ffed", border: "1px solid #b7eb8f", boxShadow: "0 1px 2px rgba(0,0,0,0.04)" }}>
                       <div style={{ marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
                         <RobotOutlined style={{ color: "#52c41a" }} /><Text strong style={{ fontSize: 12, color: "#52c41a" }}>AI 回复</Text>
                       </div>
