@@ -73,7 +73,7 @@ function DashboardYAxis({ formatTick }: { formatTick?: (v: number) => string }) 
         const y = yScale(tick);
         const label = formatTick ? formatTick(tick) : formatNumber(tick);
         return (
-          <text key={tick} x={x} y={y + 4} textAnchor="end" fontSize={11} fill="#9CA3AF" fontFamily="system-ui">
+          <text key={tick} x={x} y={y + 4} textAnchor="end" fontSize={12} fill="var(--chart-label, #9CA3AF)" fontFamily="system-ui">
             {label}
           </text>
         );
@@ -345,8 +345,7 @@ export default function DashboardPage() {
           </div>
 
           {/* 每日用量趋势（独立区域，不受筛选影响） */}
-          {trendStackedData.length > 0 ? (
-            <div className="bg-white rounded-xl border border-gray-200 p-4 mb-4">
+          <div className="bg-white rounded-xl border border-gray-200 p-4 mb-4">
               <div className="flex items-center justify-between mb-2">
                 <span className="text-sm font-semibold text-gray-900">每日用量趋势</span>
                 <div className="flex items-center gap-1">
@@ -359,15 +358,18 @@ export default function DashboardPage() {
                 </div>
               </div>
               <div className="relative w-full" style={{ height: 400, paddingLeft: 50, paddingRight: 24 }}>
-                <AreaChart data={trendStackedData} xDataKey="date" aspectRatio="unset"
+                <AreaChart data={trendStackedData.length > 0 ? trendStackedData : [{ date: dayjs().format("YYYY-MM-DD"), _placeholder: 100 }]} xDataKey="date" aspectRatio="unset"
+                  status={trendStackedData.length === 0 ? "loading" : "ready"}
+                  loadingLabel="暂无用量数据"
+                  yDomainTween={false}
                   margin={{ top: 40, right: 40, bottom: 40, left: 40 }}
                   style={{ position: "absolute", inset: 0 }}>
                   <DashboardYAxis formatTick={(v) => {
                     if (chartType === "spend") return formatSpend(v);
                     return formatNumber(v);
                   }} />
-                  <Grid horizontal />
-                  {trendModels.map((model, i) => (
+                  <Grid horizontal shimmer={trendStackedData.length === 0} shimmerSync />
+                  {trendStackedData.length > 0 && trendModels.map((model, i) => (
                     <Area
                       key={model}
                       dataKey={model}
@@ -381,7 +383,7 @@ export default function DashboardPage() {
                       fadeEdges
                     />
                   ))}
-                  <ChartHoverOverlay models={trendModels} onModelHover={setHoveredModel} />
+                  {trendStackedData.length > 0 && <ChartHoverOverlay models={trendModels} onModelHover={setHoveredModel} />}
                   <XAxis />
                   <ChartTooltip
                     backgroundColor="white"
@@ -389,7 +391,6 @@ export default function DashboardPage() {
                       const dateStr = String(point.date ?? "");
                       const m = dayjs(dateStr);
                       const displayDate = `${m.month() + 1}月${m.date()}日`;
-                      // 从累计值还原当日原始值，并按值从大到小排序
                       const rawEntries: { model: string; raw: number; colorIdx: number }[] = [];
                       let prevCumul = 0;
                       for (const model of trendModels) {
@@ -398,9 +399,7 @@ export default function DashboardPage() {
                         rawEntries.push({ model, raw, colorIdx: trendModels.indexOf(model) });
                         prevCumul = cumul;
                       }
-                      // 按当天原始值从大到小排序（大的在视觉底层→tooltip 底部）
                       rawEntries.sort((a, b) => b.raw - a.raw);
-                      // 反转：让最大的排在 tooltip 底部（和视觉堆叠一致：小的在上，大的在下）
                       rawEntries.reverse();
                       return (
                         <div className="px-3 py-2">
@@ -451,7 +450,6 @@ export default function DashboardPage() {
                 </div>
               )}
             </div>
-          ) : null}
 
           {/* 淡色大卡片：时间筛选 + 筛选数据 + 排行 */}
           <div className="bg-gray-50 rounded-2xl border border-gray-200 p-5">

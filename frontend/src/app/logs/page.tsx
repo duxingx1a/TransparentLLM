@@ -6,7 +6,7 @@ import { Table, Switch, Select, DatePicker, Button, Empty, ConfigProvider, Toolt
 import zhCN from "antd/locale/zh_CN";
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { logsApi, modelsApi } from "@/lib/api";
-import { ModelIcon, SourceIcon } from "@/lib/icons";
+import { ModelIcon, ProviderIcon, SourceIcon } from "@/lib/icons";
 import type { RequestLogItem, LogQueryParams } from "@/types";
 import dayjs from "dayjs";
 import "dayjs/locale/zh-cn";
@@ -31,7 +31,7 @@ function formatSpend(n: number): string {
   return `¥${n.toFixed(4)}`;
 }
 
-type SortField = "start_time" | "model_name" | "duration_ms" | "total_tokens" | "spend" | "tokens_per_second" | null;
+type SortField = "start_time" | "model_name" | "provider" | "duration_ms" | "total_tokens" | "spend" | "tokens_per_second" | null;
 type SortOrder = "asc" | "desc" | null;
 
 export default function LogsPage() {
@@ -180,7 +180,14 @@ export default function LogsPage() {
       render: (v: string) => <ModelIcon modelName={v} />,
     },
     {
-      title: "来源",
+      title: <span onClick={() => handleSort("provider")} className="cursor-pointer select-none">供应商 {sortIcon("provider")}</span>,
+      dataIndex: "provider",
+      key: "provider",
+      width: 130,
+      render: (v: string) => <ProviderIcon provider={v} />,
+    },
+    {
+      title: "请求来源",
       dataIndex: "source_tag",
       key: "source_tag",
       width: 120,
