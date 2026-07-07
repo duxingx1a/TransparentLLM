@@ -61,6 +61,7 @@ export interface RequestLogItem {
   end_time: string;
   completion_start_time?: string | null;
   duration_ms: number;
+  ttft_ms?: number | null;
   total_tokens: number;
   prompt_tokens: number;
   completion_tokens: number;

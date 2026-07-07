@@ -236,15 +236,13 @@ export default function LogsPage() {
     },
     {
       title: "TTFT",
-      dataIndex: "completion_start_time",
+      dataIndex: "ttft_ms",
       key: "ttft",
       width: 90,
       align: "right" as const,
-      render: (v: string | null, record: RequestLogItem) => {
+      render: (v: number | null) => {
         if (!v) return <span className="text-gray-400">-</span>;
-        const start = new Date(record.start_time).getTime();
-        const first = new Date(v).getTime();
-        return <span className="text-[13px]">{formatDuration(first - start)}</span>;
+        return <span className="text-[13px]">{formatDuration(v)}</span>;
       },
     },
     {
