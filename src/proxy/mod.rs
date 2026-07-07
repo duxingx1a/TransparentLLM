@@ -446,11 +446,11 @@ pub async fn proxy_request(
     let db = state.db.clone();
     let mn = model_config.model_name.clone();
     let st = source_tag.clone();
-    // 速率兜底
     let tps = if usage.tokens_per_second > 0.0 {
         usage.tokens_per_second
-    } else if duration_ms > 0 && usage.total_tokens > 0 {
-        usage.total_tokens as f64 / (duration_ms as f64 / 1000.0)
+    } else if usage.completion_tokens > 0 && duration_ms > 0 {
+        // 优先用 completion_tokens / duration 计算输出速率
+        usage.completion_tokens as f64 / (duration_ms as f64 / 1000.0)
     } else {
         0.0
     };
@@ -640,11 +640,11 @@ async fn proxy_stream_request(
                     + (usage.cached_tokens as f64 / 1_000_000.0) * cache_price
                     + (usage.completion_tokens as f64 / 1_000_000.0) * output_price;
 
-                // 速率兜底：上游没返回 tokens_per_second 时，用 total_tokens / 耗时 计算
+                // 速率兜底：优先用 completion_tokens / duration
                 let tps = if usage.tokens_per_second > 0.0 {
                     usage.tokens_per_second
-                } else if duration_ms > 0 && usage.total_tokens > 0 {
-                    usage.total_tokens as f64 / (duration_ms as f64 / 1000.0)
+                } else if usage.completion_tokens > 0 && duration_ms > 0 {
+                    usage.completion_tokens as f64 / (duration_ms as f64 / 1000.0)
                 } else {
                     0.0
                 };
