@@ -24,15 +24,15 @@ function formatSpend(n: number): string {
   return `¥${n.toFixed(4)}`;
 }
 
-/** 可折叠消息卡片 */
+/** 可折叠消息卡片 — 长内容限制渲染高度，可滚动查看全部 */
 function CollapsibleMessage({ children, defaultCollapsed = false }: { children: React.ReactNode; defaultCollapsed?: boolean }) {
   const [collapsed, setCollapsed] = useState(defaultCollapsed);
   const contentRef = React.useRef<HTMLDivElement>(null);
-  const [contentHeight, setContentHeight] = useState<number>(defaultCollapsed ? 100 : 0);
+  const [isLong, setIsLong] = useState(false);
 
   React.useEffect(() => {
     if (contentRef.current) {
-      setContentHeight(contentRef.current.scrollHeight);
+      setIsLong(contentRef.current.scrollHeight > 300);
     }
   }, [children]);
 
@@ -41,22 +41,24 @@ function CollapsibleMessage({ children, defaultCollapsed = false }: { children: 
       <div
         ref={contentRef}
         style={{
-          maxHeight: collapsed ? 100 : contentHeight + 20,
-          overflow: "hidden",
-          transition: "max-height 0.3s ease",
+          maxHeight: collapsed ? 100 : isLong ? 500 : undefined,
+          overflow: "auto",
+          transition: collapsed ? "max-height 0.3s ease" : undefined,
         }}
       >
         {children}
       </div>
-      <div
-        onClick={() => setCollapsed(!collapsed)}
-        style={{
-          textAlign: "center", cursor: "pointer", padding: "4px 0",
-          color: "#1677ff", fontSize: 12, userSelect: "none",
-        }}
-      >
-        {collapsed ? <><DownOutlined /> 展开</> : <><RightOutlined /> 收起</>}
-      </div>
+      {collapsed && (
+        <div
+          onClick={() => setCollapsed(false)}
+          style={{
+            textAlign: "center", cursor: "pointer", padding: "4px 0",
+            color: "#1677ff", fontSize: 12, userSelect: "none",
+          }}
+        >
+          <DownOutlined /> 展开全部
+        </div>
+      )}
     </div>
   );
 }
@@ -127,7 +129,10 @@ function LogDetailContent() {
 
       {data.messages && data.messages.length > 0 && (() => {
         // 构建对话流
-        const conversation: Array<{ role: string; content: string; type?: string }> = data.messages.map((m) => ({ role: m.role, content: m.content }));
+        const conversation: Array<{ role: string; content: string; type?: string }> = data.messages.map((m) => ({
+          role: m.role,
+          content: typeof m.content === "string" ? m.content : JSON.stringify(m.content, null, 2),
+        }));
 
         let thinkingText = data.thinking_text || "";
         let replyText = data.reply_text || "";
@@ -184,16 +189,17 @@ function LogDetailContent() {
                         {isAssistant && !isThinking && !isReply && !isError && <><RobotOutlined style={{ color: "#1677ff" }} /><Text strong style={{ fontSize: 12, color: "#1677ff" }}>Assistant</Text></>}
                       </div>
                       <CollapsibleMessage defaultCollapsed={isThinking || isReply || isError}>
-                        <Paragraph style={{
-                          margin: 0,
+                        <div style={{
                           whiteSpace: "pre-wrap",
                           wordBreak: "break-word",
                           fontSize: 13,
                           lineHeight: 1.7,
                           color: isError ? "#ff4d4f" : "#333",
+                          contentVisibility: "auto",
+                          containIntrinsicSize: "0 200px",
                         }}>
                           {msg.content}
-                        </Paragraph>
+                        </div>
                       </CollapsibleMessage>
                     </div>
                   </div>
