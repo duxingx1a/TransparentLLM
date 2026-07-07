@@ -380,7 +380,7 @@ export default function DashboardPage() {
                         ? `${MODEL_COLORS[i % MODEL_COLORS.length]}40`
                         : MODEL_COLORS[i % MODEL_COLORS.length]}
                       strokeWidth={hoveredModel === null ? 2 : hoveredModel === model ? 3 : 1}
-                      fadeEdges={trendStackedData.length > 5 ? "both" : false}
+                      fadeEdges={trendStackedData.length > 5 ? true : false}
                     />
                   ))}
                   {trendStackedData.length > 0 && <ChartHoverOverlay models={trendModels} onModelHover={setHoveredModel} />}
