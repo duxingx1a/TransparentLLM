@@ -27,7 +27,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 use crate::auth::AuthState;
 use crate::config::AppConfig;
 use crate::db::run_migrations;
-use crate::logging::start_cleanup_task;
+use crate::logging::{start_cleanup_task, sync_daily_stats_from_logs};
 
 /// 共享应用状态
 pub struct AppState {
@@ -63,6 +63,9 @@ async fn main() -> anyhow::Result<()> {
 
     // 启动日志清理任务（每 6 小时清理一次过期日志）
     start_cleanup_task(db.clone(), config.log_retention_days);
+
+    // 启动时同步 daily_stats（防止部署后数据丢失导致首页为空）
+    sync_daily_stats_from_logs(&db).await;
 
     // 构建应用状态
     let state = Arc::new(AppState { db, config: config.clone(), auth });

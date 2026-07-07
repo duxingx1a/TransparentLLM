@@ -50,8 +50,8 @@ ssh $Server "cp -r $RemoteDir/frontend/out/* /root/ydl-projects/nginx/sites/llm/
 # 4. 服务器加载镜像 + 启动
 Write-Host "`n=== 4/4 服务器启动 ===" -ForegroundColor Cyan
 
-$remoteCmd = "cd $RemoteDir; docker compose down --remove-orphans 2>/dev/null || true; sed -i 's/change-me-to-32-byte-secret-key!!/$Key/' docker-compose.yaml; docker load -i transparentllm.tar; docker compose up -d; sleep 5; docker exec nginx-proxy nginx -s reload 2>&1; echo '=== 验证 ==='; curl -so /dev/null -w '/llm/ HTTP:%{http_code}' http://127.0.0.1/llm/; echo ''; curl -so /dev/null -w '/llm/ui/ HTTP:%{http_code}' http://127.0.0.1/llm/ui/; echo ' /llm/ui/'; curl -so /dev/null -w '/llm/ui/login HTTP:%{http_code}' http://127.0.0.1/llm/ui/login; echo ' /llm/ui/login'"
+$remoteCmd = "cd $RemoteDir; sed -i 's/change-me-to-32-byte-secret-key!!/$Key/' docker-compose.yaml; docker load -i transparentllm.tar; docker compose up -d --force-recreate transparentllm; sleep 5; docker exec nginx-proxy nginx -s reload 2>&1; echo '=== 验证 ==='; curl -so /dev/null -w '/ui/ HTTP:%{http_code}' http://127.0.0.1/ui/; echo ''; curl -so /dev/null -w '/ui/logs HTTP:%{http_code}' http://127.0.0.1/ui/logs; echo ''; curl -so /dev/null -w '/ui/dashboard HTTP:%{http_code}' http://127.0.0.1/ui/dashboard; echo ''"
 
 ssh $Server $remoteCmd
 
-Write-Host "`n部署完成! http://8.137.187.63/llm/ (API文档)  http://8.137.187.63/llm/ui/ (管理面板)" -ForegroundColor Green
+Write-Host "`n部署完成! http://8.137.187.63/ui/ (管理面板)" -ForegroundColor Green

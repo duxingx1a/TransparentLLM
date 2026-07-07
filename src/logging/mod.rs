@@ -163,3 +163,64 @@ async fn cleanup_expired_logs(db: &PgPool, retention_days: i64) {
         }
     }
 }
+
+/// 启动时从 request_logs 重建 daily_stats（防止部署后数据丢失）
+///
+/// 仅在 daily_stats 为空但 request_logs 有数据时执行。
+pub async fn sync_daily_stats_from_logs(db: &PgPool) {
+    let stats_count: (i64,) = sqlx::query_as("SELECT COUNT(*)::bigint FROM daily_stats")
+        .fetch_one(db)
+        .await
+        .unwrap_or((0,));
+    let logs_count: (i64,) = sqlx::query_as("SELECT COUNT(*)::bigint FROM request_logs")
+        .fetch_one(db)
+        .await
+        .unwrap_or((0,));
+
+    if stats_count.0 > 0 || logs_count.0 == 0 {
+        return; // daily_stats 已有数据，或 request_logs 为空，无需同步
+    }
+
+    tracing::info!(
+        "daily_stats 为空但有 {} 条 request_logs，开始重建...",
+        logs_count.0
+    );
+
+    let result = sqlx::query(
+        r#"
+        INSERT INTO daily_stats (date, model_name, source_tag, total_requests,
+            total_tokens, prompt_tokens, completion_tokens, cache_hits,
+            cached_tokens, total_spend, failed_requests)
+        SELECT
+            DATE(start_time) as date,
+            model_name,
+            source_tag,
+            COUNT(*)::bigint as total_requests,
+            SUM(total_tokens)::bigint as total_tokens,
+            SUM(prompt_tokens)::bigint as prompt_tokens,
+            SUM(completion_tokens)::bigint as completion_tokens,
+            SUM(CASE WHEN cache_hit != 0 THEN 1 ELSE 0 END)::bigint as cache_hits,
+            SUM(cached_tokens)::bigint as cached_tokens,
+            SUM(spend) as total_spend,
+            SUM(CASE WHEN status != 'success' THEN 1 ELSE 0 END)::bigint as failed_requests
+        FROM request_logs
+        GROUP BY DATE(start_time), model_name, source_tag
+        ON CONFLICT(date, model_name, source_tag) DO UPDATE SET
+            total_requests = EXCLUDED.total_requests,
+            total_tokens = EXCLUDED.total_tokens,
+            prompt_tokens = EXCLUDED.prompt_tokens,
+            completion_tokens = EXCLUDED.completion_tokens,
+            cache_hits = EXCLUDED.cache_hits,
+            cached_tokens = EXCLUDED.cached_tokens,
+            total_spend = EXCLUDED.total_spend,
+            failed_requests = EXCLUDED.failed_requests
+        "#,
+    )
+    .execute(db)
+    .await;
+
+    match result {
+        Ok(r) => tracing::info!("daily_stats 重建完成，写入 {} 行", r.rows_affected()),
+        Err(e) => tracing::error!("daily_stats 重建失败: {}", e),
+    }
+}
