@@ -319,9 +319,9 @@ export default function DashboardPage() {
         total_spend: data?.total?.total_spend ?? 0,
       };
     }
-    let r = 0, t = 0, ct = 0, pt = 0, cot = 0, s = 0;
-    filteredByModel.forEach((d) => { r += d.requests; t += d.tokens; ct += d.cached_tokens; pt += d.tokens; s += d.spend; });
-    return { total_requests: r, failed_requests: 0, total_tokens: t, cached_tokens: ct, prompt_tokens: pt, completion_tokens: cot, total_spend: s };
+    let r = 0, t = 0, ct = 0, pt = 0, cot = 0, s = 0, f = 0;
+    filteredByModel.forEach((d) => { r += d.requests; t += d.tokens; ct += d.cached_tokens; pt += d.tokens; s += d.spend; f += (d as any).failed ?? 0; });
+    return { total_requests: r, failed_requests: f, total_tokens: t, cached_tokens: ct, prompt_tokens: pt, completion_tokens: cot, total_spend: s };
   }, [data, filteredByModel, dateRange]);
 
 
@@ -380,7 +380,7 @@ export default function DashboardPage() {
                         ? `${MODEL_COLORS[i % MODEL_COLORS.length]}40`
                         : MODEL_COLORS[i % MODEL_COLORS.length]}
                       strokeWidth={hoveredModel === null ? 2 : hoveredModel === model ? 3 : 1}
-                      fadeEdges
+                      fadeEdges={trendStackedData.length > 5 ? "both" : false}
                     />
                   ))}
                   {trendStackedData.length > 0 && <ChartHoverOverlay models={trendModels} onModelHover={setHoveredModel} />}

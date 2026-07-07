@@ -168,17 +168,13 @@ async fn cleanup_expired_logs(db: &PgPool, retention_days: i64) {
 ///
 /// 仅在 daily_stats 为空但 request_logs 有数据时执行。
 pub async fn sync_daily_stats_from_logs(db: &PgPool) {
-    let stats_count: (i64,) = sqlx::query_as("SELECT COUNT(*)::bigint FROM daily_stats")
-        .fetch_one(db)
-        .await
-        .unwrap_or((0,));
     let logs_count: (i64,) = sqlx::query_as("SELECT COUNT(*)::bigint FROM request_logs")
         .fetch_one(db)
         .await
         .unwrap_or((0,));
 
-    if stats_count.0 > 0 || logs_count.0 == 0 {
-        return; // daily_stats 已有数据，或 request_logs 为空，无需同步
+    if logs_count.0 == 0 {
+        return; // request_logs 为空，无需同步
     }
 
     tracing::info!(

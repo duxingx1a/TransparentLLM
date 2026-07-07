@@ -905,10 +905,12 @@ async fn get_stats_overview(
         tokens: i64,
         spend: f64,
         cached_tokens: i64,
+        failed: i64,
     }
     let daily_by_model: Vec<DailyByModel> = sqlx::query_as(
         "SELECT date, model_name, SUM(total_requests)::bigint as requests, SUM(total_tokens)::bigint as tokens, \
-                SUM(total_spend) as spend, SUM(cached_tokens)::bigint as cached_tokens \
+                SUM(total_spend) as spend, SUM(cached_tokens)::bigint as cached_tokens, \
+                SUM(failed_requests)::bigint as failed \
          FROM daily_stats GROUP BY date, model_name ORDER BY date ASC"
     )
     .fetch_all(db)

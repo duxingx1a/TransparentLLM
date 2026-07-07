@@ -16,33 +16,8 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-    depends_on:
-      transparentllm-pg:
-        condition: service_healthy
     networks:
-      - default
       - nginx-net
-
-  transparentllm-pg:
-    image: postgres:16-alpine
-    container_name: transparentllm-pg
-    environment:
-      - POSTGRES_USER=tlm
-      - POSTGRES_PASSWORD=tlm_secret_2024
-      - POSTGRES_DB=transparentllm
-    volumes:
-      - transparentllm-pgdata:/var/lib/postgresql/data
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U tlm -d transparentllm"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - default
-
-volumes:
-  transparentllm-pgdata:
 
 networks:
   nginx-net:

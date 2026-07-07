@@ -481,9 +481,11 @@ pub async fn proxy_request(
 
     tokio::spawn(async move {
         write_request_log(&db, &log_entry).await.ok();
-        update_daily_stats(&db, &mn, &st, usage.total_tokens as i64,
+        if let Err(e) = update_daily_stats(&db, &mn, &st, usage.total_tokens as i64,
             usage.prompt_tokens as i64, usage.completion_tokens as i64,
-            usage.cache_hit, usage.cached_tokens as i64, spend, !success).await.ok();
+            usage.cache_hit, usage.cached_tokens as i64, spend, !success).await {
+            tracing::error!("daily_stats 更新失败: {}", e);
+        }
     });
 
     Ok(Response::builder()
@@ -589,7 +591,9 @@ async fn proxy_stream_request(
 
         tokio::spawn(async move {
             write_request_log(&db, &log_entry).await.ok();
-            update_daily_stats(&db, &mn, &st, 0, 0, 0, false, 0, 0.0, true).await.ok();
+            if let Err(e) = update_daily_stats(&db, &mn, &st, 0, 0, 0, false, 0, 0.0, true).await {
+                tracing::error!("daily_stats 更新失败: {}", e);
+            }
         });
 
         return Err(ProxyError::UpstreamError(error_body, None));
@@ -676,7 +680,7 @@ async fn proxy_stream_request(
                     tracing::error!("SSE 日志写入失败: {}", e);
                 }
 
-                update_daily_stats(
+                if let Err(e) = update_daily_stats(
                     &db, &mn, &st,
                     usage.total_tokens as i64,
                     usage.prompt_tokens as i64,
@@ -685,7 +689,9 @@ async fn proxy_stream_request(
                     usage.cached_tokens as i64,
                     spend,
                     is_error,
-                ).await.ok();
+                ).await {
+                    tracing::error!("SSE daily_stats 更新失败: {}", e);
+                }
             }
         },
     );

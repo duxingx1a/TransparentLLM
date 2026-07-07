@@ -219,7 +219,7 @@ export default function LogsPage() {
               </div>
             }
             placement="topLeft"
-            overlayStyle={{ maxWidth: 400 }}
+            styles={{ root: { maxWidth: 400 } }}
           >
             {statusTag}
           </Tooltip>

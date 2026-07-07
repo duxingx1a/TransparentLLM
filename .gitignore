@@ -29,6 +29,17 @@
 ## 参考源码（不提交）
 /reference/
 
+## 临时/调试文件
+CHART_HIGHLIGHT_SPEC.md
+check_db_size.py
+check_schema.py
+delete_fake_data.py
+docker-compose.server.yaml
+fake_data*.py
+fake_data*.sql
+frontend/-w
+frontend/EXPERIENCE.md
+
 ## 日志和大文件
 backend.log
 *.tar
