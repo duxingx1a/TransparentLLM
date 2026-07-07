@@ -41,10 +41,14 @@ where
         while let Some(chunk_result) = stream.next().await {
             match chunk_result {
                 Ok(bytes) => {
-                    // 记录首个内容 chunk 的时间
+                    // 记录首个内容 chunk 的时间（TTFT）
+                    // 检查是否有实际的 delta content / reasoning_content
                     if first_content_chunk {
                         if let Ok(text) = std::str::from_utf8(&bytes) {
-                            if text.contains("\"delta\"") || text.contains("\"content\"") {
+                            let has_content = text.contains("\"content\"")
+                                || text.contains("\"reasoning_content\"")
+                                || text.contains("\"reasoning\"");
+                            if has_content {
                                 completion_start_time =
                                     Some(chrono::Utc::now().to_rfc3339());
                                 first_content_chunk = false;

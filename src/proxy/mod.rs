@@ -446,6 +446,15 @@ pub async fn proxy_request(
     let db = state.db.clone();
     let mn = model_config.model_name.clone();
     let st = source_tag.clone();
+    // 速率兜底
+    let tps = if usage.tokens_per_second > 0.0 {
+        usage.tokens_per_second
+    } else if duration_ms > 0 && usage.total_tokens > 0 {
+        usage.total_tokens as f64 / (duration_ms as f64 / 1000.0)
+    } else {
+        0.0
+    };
+
     let log_entry = RequestLogEntry {
         id: uuid::Uuid::new_v4().to_string(),
         model_name: model_config.model_name.clone(),
@@ -467,7 +476,7 @@ pub async fn proxy_request(
         messages: extract_messages_json(&body),
         response: Some(response_text),
         error_msg: if success { None } else { Some(format!("HTTP {}", status_code.as_u16())) },
-        tokens_per_second: usage.tokens_per_second,
+        tokens_per_second: tps,
     };
 
     tokio::spawn(async move {
@@ -627,6 +636,15 @@ async fn proxy_stream_request(
                     + (usage.cached_tokens as f64 / 1_000_000.0) * cache_price
                     + (usage.completion_tokens as f64 / 1_000_000.0) * output_price;
 
+                // 速率兜底：上游没返回 tokens_per_second 时，用 total_tokens / 耗时 计算
+                let tps = if usage.tokens_per_second > 0.0 {
+                    usage.tokens_per_second
+                } else if duration_ms > 0 && usage.total_tokens > 0 {
+                    usage.total_tokens as f64 / (duration_ms as f64 / 1000.0)
+                } else {
+                    0.0
+                };
+
                 let log_entry = RequestLogEntry {
                     id: uuid::Uuid::new_v4().to_string(),
                     model_name: mn.clone(),
@@ -651,7 +669,7 @@ async fn proxy_stream_request(
                         .and_then(|v| extract_messages_json(v)),
                     response: final_body.as_ref().map(|b| serde_json::to_string(b).unwrap_or_default()),
                     error_msg,
-                    tokens_per_second: usage.tokens_per_second,
+                    tokens_per_second: tps,
                 };
 
                 if let Err(e) = write_request_log(&db, &log_entry).await {
