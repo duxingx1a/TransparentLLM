@@ -18,7 +18,7 @@ wsl -u root service docker start 2>&1 | Out-Null
 # 1. 编译前端
 Write-Host "=== 1/4 编译前端 ===" -ForegroundColor Cyan
 Push-Location $PSScriptRoot\frontend
-$env:NEXT_PUBLIC_API_BASE=""; npm run build
+npm run build
 Pop-Location
 
 # 2. 编译后端 Linux 二进制 + 构建 Docker 镜像

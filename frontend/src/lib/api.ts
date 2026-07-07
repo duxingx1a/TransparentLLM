@@ -238,8 +238,7 @@ export const playgroundApi = {
     signal?: AbortSignal
   ): AsyncGenerator<{ content?: string; reasoning_content?: string; reasoning?: string; usage?: any; done?: boolean }> {
     const token = typeof window !== "undefined" ? localStorage.getItem("master_key") : null;
-    // 流式请求必须直接访问后端，绕过 Next.js rewrites（它会缓冲 SSE）
-    const streamBase = process.env.NEXT_PUBLIC_API_BASE || "http://127.0.0.1:18400";
+    const streamBase = API_BASE;
     const res = await fetch(`${streamBase}/api/playground/chat`, {
       method: "POST",
       headers: {

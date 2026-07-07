@@ -11,7 +11,7 @@ const nextConfig = {
   images: { unoptimized: true },
   trailingSlash: false,
   env: {
-    NEXT_PUBLIC_API_BASE: process.env.NEXT_PUBLIC_API_BASE ?? "http://127.0.0.1:18400",
+    NEXT_PUBLIC_API_BASE: "",
   },
 };
 
