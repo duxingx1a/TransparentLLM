@@ -4,6 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
+use std::collections::HashMap;
 
 use crate::crypto;
 
@@ -86,6 +87,28 @@ pub async fn list_models(db: &PgPool) -> anyhow::Result<Vec<ModelConfig>> {
     .await?;
 
     Ok(rows.into_iter().map(|r| r.into_config()).collect())
+}
+
+/// 构建模型名→配置的缓存映射（key: "{provider}-{model_name}"）
+pub async fn build_model_cache(db: &PgPool) -> HashMap<String, ModelConfigFull> {
+    let rows = sqlx::query_as::<_, ModelRow>(
+        r#"
+        SELECT id, model_name, provider, api_base, input_price, output_price, cache_price,
+               model_type, created_at, updated_at, encrypted_api_key, upstream_model_name
+        FROM models
+        "#,
+    )
+    .fetch_all(db)
+    .await
+    .unwrap_or_default();
+
+    rows.into_iter()
+        .map(|r| {
+            let full = r.into_full();
+            let key = format!("{}-{}", full.provider, full.model_name);
+            (key, full)
+        })
+        .collect()
 }
 
 /// 获取单个模型
@@ -248,6 +271,7 @@ pub async fn delete_model(db: &PgPool, id: &str) -> anyhow::Result<bool> {
 }
 
 /// 解密并获取模型的完整信息（含明文 API Key，仅供代理转发使用）
+#[derive(Debug, Clone)]
 pub struct ModelConfigFull {
     pub id: String,
     pub model_name: String,

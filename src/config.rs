@@ -48,7 +48,7 @@ impl AppConfig {
                 .and_then(|p| p.parse().ok())
                 .unwrap_or(18400),
             database_url: std::env::var("TRANSPARENTLLM_DATABASE_URL")
-                .unwrap_or_else(|_| "postgres://ydl:870304@localhost:5432/transparentllm".into()),
+                .unwrap_or_else(|_| "postgres://ydl@localhost:5432/transparentllm".into()),
             master_key_hash: master_key.map(|k| {
                 use sha2::{Digest, Sha256};
                 hex::encode(Sha256::digest(k.as_bytes()))

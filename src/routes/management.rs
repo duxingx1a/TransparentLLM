@@ -183,7 +183,14 @@ async fn create_model(
         return resp;
     }
     match crate::models::create_model(&state.db, req, &state.config.encryption_key).await {
-        Ok(model) => (StatusCode::CREATED, Json(model)).into_response(),
+        Ok(model) => {
+            // 重建模型缓存
+            let new_cache = crate::models::build_model_cache(&state.db).await;
+            if let Ok(mut cache) = state.model_cache.write() {
+                *cache = new_cache;
+            }
+            (StatusCode::CREATED, Json(model)).into_response()
+        }
         Err(e) => {
             let msg = e.to_string();
             let code = if msg.contains("UNIQUE constraint") {
@@ -214,6 +221,11 @@ async fn update_model(
                 let db = state.db.clone();
                 tokio::spawn(async move { do_recalculate_spend(&db).await; });
             }
+            // 重建模型缓存
+            let new_cache = crate::models::build_model_cache(&state.db).await;
+            if let Ok(mut cache) = state.model_cache.write() {
+                *cache = new_cache;
+            }
             Json(model).into_response()
         }
         Ok(None) => (
@@ -238,7 +250,14 @@ async fn delete_model(
         return resp;
     }
     match crate::models::delete_model(&state.db, &id).await {
-        Ok(true) => Json(serde_json::json!({"success": true})).into_response(),
+        Ok(true) => {
+            // 重建模型缓存
+            let new_cache = crate::models::build_model_cache(&state.db).await;
+            if let Ok(mut cache) = state.model_cache.write() {
+                *cache = new_cache;
+            }
+            Json(serde_json::json!({"success": true})).into_response()
+        }
         Ok(false) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "模型不存在"})),
@@ -298,10 +317,10 @@ async fn test_model(
 }
 
 /// POST /api/models/recalculate-spend — 价格变更后重新计算所有日志的花费
-///
 /// 遍历所有 request_logs，根据当前模型价格重新计算 spend 字段，
-/// 同时更新 daily_stats 聚合表。
-/// 核心重算逻辑（被 update_model 和 recalculate_spend 共用）
+/// 同时重建 daily_stats 聚合表。
+/// 使用原子替换方式：先写入临时表，再 rename 交换，避免数据丢失。
+/// 被 update_model 和 recalculate_spend 共用。
 async fn do_recalculate_spend(db: &sqlx::PgPool) {
     // 1. 获取所有模型的当前价格
     let models = crate::models::list_models(db).await.unwrap_or_default();
@@ -310,10 +329,7 @@ async fn do_recalculate_spend(db: &sqlx::PgPool) {
         .map(|m| (m.model_name.clone(), (m.input_price, m.output_price, m.cache_price)))
         .collect();
 
-    // 2. 清空 daily_stats，稍后重建
-    sqlx::query("DELETE FROM daily_stats").execute(db).await.ok();
-
-    // 3. 修正 request_logs 中的 model_name（去掉 provider 前缀）
+    // 2. 修正 request_logs 中的 model_name（去掉 provider 前缀）
     sqlx::query(
         "UPDATE request_logs SET model_name = regexp_replace(model_name, '^[^-]+-', '') \
          WHERE regexp_replace(model_name, '^[^-]+-', '') IN (SELECT model_name FROM models)"
@@ -322,13 +338,17 @@ async fn do_recalculate_spend(db: &sqlx::PgPool) {
     .await
     .ok();
 
-    // 4. 重新计算每条 request_logs 的 spend
+    // 3. 重新计算每条 request_logs 的 spend
     let logs = sqlx::query_as::<_, (String, String, String, i64, i64, i64, i64, i32, String, String, String, String, String, f64)>(
         "SELECT id, model_name, provider, prompt_tokens, completion_tokens, cached_tokens, total_tokens, cache_hit, source_tag, start_time, end_time, completion_start_time, status, spend FROM request_logs"
     )
     .fetch_all(db)
     .await
     .unwrap_or_default();
+
+    // 先收集所有更新，不直接写 DB
+    let mut spend_updates: Vec<(f64, String)> = Vec::with_capacity(logs.len());
+    let mut stats_rows: std::collections::HashMap<(String, String, String), (i64, i64, i64, i64, i64, i64, f64)> = std::collections::HashMap::new();
 
     for (id, model_name, _provider, prompt_tokens, completion_tokens, cached_tokens, _total_tokens, cache_hit, source_tag, start_time, _end_time, _completion_start_time, _status, _old_spend) in &logs {
         let new_spend = if let Some((input_price, output_price, cache_price)) = price_map.get(model_name) {
@@ -341,40 +361,68 @@ async fn do_recalculate_spend(db: &sqlx::PgPool) {
             0.0
         };
 
-        sqlx::query("UPDATE request_logs SET spend = $1 WHERE id = $2")
-            .bind(new_spend)
-            .bind(id)
-            .execute(db)
-            .await
-            .ok();
+        spend_updates.push((new_spend, id.clone()));
 
         let date = &start_time[..10];
-        let cache_hit_bool = *cache_hit != 0;
+        let key = (date.to_string(), model_name.clone(), source_tag.clone());
+        let entry = stats_rows.entry(key).or_insert((0, 0, 0, 0, 0, 0, 0.0));
+        entry.0 += 1;                          // total_requests
+        entry.1 += *prompt_tokens;              // total_tokens
+        entry.2 += *prompt_tokens;              // prompt_tokens
+        entry.3 += *completion_tokens;          // completion_tokens
+        if *cache_hit != 0 { entry.4 += 1; }   // cache_hits
+        entry.5 += *cached_tokens;              // cached_tokens
+        entry.6 += new_spend;                  // total_spend
+    }
+
+    // 4. 在一个事务中原子更新：先改 spend，再原子替换 daily_stats
+    let mut tx = db.begin().await.unwrap();
+
+    // 逐条更新 spend（分批避免事务太大）
+    for chunk in spend_updates.chunks(500) {
+        for (spend, id) in chunk {
+            sqlx::query("UPDATE request_logs SET spend = $1 WHERE id = $2")
+                .bind(spend)
+                .bind(id)
+                .execute(&mut *tx)
+                .await
+                .ok();
+        }
+    }
+
+    // 创建临时表写入新数据
+    sqlx::query(
+        "CREATE TEMP TABLE daily_stats_new (LIKE daily_stats INCLUDING DEFAULTS) ON COMMIT DROP"
+    )
+    .execute(&mut *tx)
+    .await
+    .ok();
+
+    for ((date, model_name, source_tag), (total_requests, total_tokens, prompt_tokens, completion_tokens, cache_hits, cached_tokens, total_spend)) in &stats_rows {
         sqlx::query(
-            "INSERT INTO daily_stats (date, model_name, source_tag, total_requests, total_tokens, prompt_tokens, completion_tokens, cache_hits, cached_tokens, total_spend, failed_requests) \
-             VALUES ($1, $2, $3, 1, $8, $4, $5, $6::bigint, $7, $9, 0) \
-             ON CONFLICT (date, model_name, source_tag) DO UPDATE SET \
-             total_requests = daily_stats.total_requests + 1, \
-             total_tokens = daily_stats.total_tokens + EXCLUDED.total_tokens, \
-             prompt_tokens = daily_stats.prompt_tokens + EXCLUDED.prompt_tokens, \
-             completion_tokens = daily_stats.completion_tokens + EXCLUDED.completion_tokens, \
-             cache_hits = daily_stats.cache_hits + EXCLUDED.cache_hits, \
-             cached_tokens = daily_stats.cached_tokens + EXCLUDED.cached_tokens, \
-             total_spend = daily_stats.total_spend + EXCLUDED.total_spend"
+            "INSERT INTO daily_stats_new (date, model_name, source_tag, total_requests, total_tokens, prompt_tokens, completion_tokens, cache_hits, cached_tokens, total_spend, failed_requests) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 0)"
         )
         .bind(date)
-        .bind(&model_name)
-        .bind(&source_tag)
+        .bind(model_name)
+        .bind(source_tag)
+        .bind(total_requests)
+        .bind(total_tokens)
         .bind(prompt_tokens)
         .bind(completion_tokens)
-        .bind(if cache_hit_bool { 1i64 } else { 0i64 })
+        .bind(cache_hits)
         .bind(cached_tokens)
-        .bind(prompt_tokens + completion_tokens)
-        .bind(new_spend)
-        .execute(db)
+        .bind(total_spend)
+        .execute(&mut *tx)
         .await
         .ok();
     }
+
+    // 原子替换：删旧表，将临时表重命名为正式表名
+    sqlx::query("DELETE FROM daily_stats").execute(&mut *tx).await.ok();
+    sqlx::query("INSERT INTO daily_stats SELECT * FROM daily_stats_new").execute(&mut *tx).await.ok();
+
+    tx.commit().await.unwrap();
 }
 
 async fn recalculate_spend(
@@ -719,33 +767,65 @@ async fn get_log_detail(
     if let Err(resp) = crate::auth::middleware::check_auth(&state, &headers) {
         return resp;
     }
-    let log = sqlx::query_as::<_, LogDetailRow>(
-        "SELECT *, CASE WHEN completion_start_time IS NOT NULL AND completion_start_time != '' \
-           THEN (EXTRACT(EPOCH FROM (completion_start_time::timestamptz - start_time::timestamptz)) * 1000)::BIGINT \
-           ELSE NULL END as ttft_ms FROM request_logs WHERE id = $1"
-    )
-    .bind(&id)
-    .fetch_optional(&state.db)
-    .await;
+    // 第一步：快速获取基本信息（不含 messages/response 大字段）
+    let basic_sql = "SELECT id, model_name, provider, api_base, source_tag, start_time, end_time, \
+        completion_start_time, duration_ms, total_tokens, prompt_tokens, completion_tokens, \
+        cached_tokens, cache_hit, cache_key, spend, status, error_msg, created_at, tokens_per_second, \
+        CASE WHEN completion_start_time IS NOT NULL AND completion_start_time != '' \
+          THEN (EXTRACT(EPOCH FROM (completion_start_time::timestamptz - start_time::timestamptz)) * 1000)::BIGINT \
+          ELSE NULL END as ttft_ms \
+        FROM request_logs WHERE id = $1";
+    #[derive(Debug, sqlx::FromRow)]
+    struct LogBasicRow {
+        id: String, model_name: String, provider: String, api_base: String,
+        source_tag: String, start_time: String, end_time: String,
+        completion_start_time: Option<String>, duration_ms: i64, ttft_ms: Option<i64>,
+        total_tokens: i64, prompt_tokens: i64, completion_tokens: i64,
+        cached_tokens: i64, cache_hit: i32, cache_key: Option<String>,
+        spend: f64, status: String, error_msg: Option<String>,
+        created_at: chrono::DateTime<chrono::Utc>, tokens_per_second: f64,
+    }
+    let basic = sqlx::query_as::<_, LogBasicRow>(basic_sql)
+        .bind(&id)
+        .fetch_optional(&state.db)
+        .await;
+    let row = match basic {
+        Ok(Some(r)) => r,
+        Ok(None) => return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "日志不存在"})),
+        ).into_response(),
+        Err(e) => return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        ).into_response(),
+    };
+    // 第二步：单独获取 messages 和 response（大字段，可能较慢）
+    let (messages_raw, response_raw) = sqlx::query_as::<_, (Option<String>, Option<String>)>
+        ("SELECT messages, response FROM request_logs WHERE id = $1")
+        .bind(&id)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
 
-    match log {
-        Ok(Some(row)) => {
-            // 解析 messages（TEXT → JSON）
-            let messages: Option<serde_json::Value> = row.messages.as_ref().and_then(|s| serde_json::from_str(s).ok());
-            // 兼容旧数据：messages 可能是完整请求体对象 {messages:[...], model:...}
-            let messages = match &messages {
-                Some(serde_json::Value::Object(obj)) if obj.contains_key("messages") => {
-                    obj.get("messages").cloned()
-                }
-                other => other.clone(),
-            };
-            // 解析 response（TEXT → JSON）
-            let response: Option<serde_json::Value> = row.response.as_ref().and_then(|s| serde_json::from_str(s).ok());
-            // 从响应中提取思考过程和最终回复
-            let (thinking_text, reply_text) = response.as_ref().map(|r| extract_thinking_and_reply(r)).unwrap_or_default();
-            // response_text = 思考 + 回复（向后兼容）
-            let response_text = if thinking_text.is_empty() { reply_text.clone() } else if reply_text.is_empty() { thinking_text.clone() } else { format!("{}\n\n---\n\n{}", thinking_text, reply_text) };
-            Json(serde_json::json!({
+    // 解析 messages（TEXT → JSON）
+    let messages: Option<serde_json::Value> = messages_raw.as_ref().and_then(|s| serde_json::from_str(s).ok());
+    // 兼容旧数据：messages 可能是完整请求体对象 {messages:[...], model:...}
+    let messages = match &messages {
+        Some(serde_json::Value::Object(obj)) if obj.contains_key("messages") => {
+            obj.get("messages").cloned()
+        }
+        other => other.clone(),
+    };
+    // 解析 response（TEXT → JSON）
+    let response: Option<serde_json::Value> = response_raw.as_ref().and_then(|s| serde_json::from_str(s).ok());
+    // 从响应中提取思考过程和最终回复
+    let (thinking_text, reply_text) = response.as_ref().map(|r| extract_thinking_and_reply(r)).unwrap_or_default();
+    // response_text = 思考 + 回复（向后兼容）
+    let response_text = if thinking_text.is_empty() { reply_text.clone() } else if reply_text.is_empty() { thinking_text.clone() } else { format!("{}\n\n---\n\n{}", thinking_text, reply_text) };
+    Json(serde_json::json!({
                 "id": row.id,
                 "model_name": row.model_name,
                 "provider": row.provider,
@@ -773,16 +853,6 @@ async fn get_log_detail(
                 "created_at": row.created_at.to_rfc3339(),
                 "tokens_per_second": row.tokens_per_second,
             })).into_response()
-        }
-        Ok(None) => (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": "日志不存在"})),
-        ).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
-        ).into_response(),
-    }
 }
 
 // ── 统计 ──

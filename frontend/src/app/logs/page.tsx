@@ -263,7 +263,7 @@ export default function LogsPage() {
         record.cache_hit && record.cached_tokens > 0 ? (
           <span className="text-[13px]">
             <span className="text-green-600">{record.cached_tokens}</span>
-            <span className="text-[12px]">({record.prompt_tokens})</span>
+            <span className="text-[12px]">({record.prompt_tokens > 0 ? ((record.cached_tokens / record.prompt_tokens) * 100).toFixed(1) : "0.0"}%)</span>
           </span>
         ) : (
           <span className="text-gray-400">-</span>

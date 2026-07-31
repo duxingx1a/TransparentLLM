@@ -14,8 +14,9 @@ mod proxy;
 mod routes;
 mod source_tag;
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use axum::Router;
 use axum::response::Html;
@@ -27,13 +28,18 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 use crate::auth::AuthState;
 use crate::config::AppConfig;
 use crate::db::run_migrations;
-use crate::logging::{start_cleanup_task, sync_daily_stats_from_logs};
+use crate::logging::{start_cleanup_task, sync_daily_stats_from_logs, BatchLogger};
+use crate::models::ModelConfigFull;
 
 /// 共享应用状态
 pub struct AppState {
     pub db: sqlx::PgPool,
     pub config: AppConfig,
     pub auth: AuthState,
+    /// 模型名（"{provider}-{model_name}"）→ 模型配置缓存，避免每次请求都查 DB
+    pub model_cache: RwLock<HashMap<String, ModelConfigFull>>,
+    /// 批量日志写入器
+    pub logger: Arc<BatchLogger>,
 }
 
 #[tokio::main]
@@ -67,8 +73,18 @@ async fn main() -> anyhow::Result<()> {
     // 启动时同步 daily_stats（防止部署后数据丢失导致首页为空）
     sync_daily_stats_from_logs(&db).await;
 
-    // 构建应用状态
-    let state = Arc::new(AppState { db, config: config.clone(), auth });
+    // 启动批量日志写入器（每 15 秒 flush 一次，减少 DB 连接竞争）
+    let logger = BatchLogger::start(db.clone(), std::time::Duration::from_secs(15));
+
+    // 构建应用状态（含模型缓存）
+    let model_cache = RwLock::new(crate::models::build_model_cache(&db).await);
+    let state = Arc::new(AppState {
+        db,
+        config: config.clone(),
+        auth,
+        model_cache,
+        logger,
+    });
 
     // 组装路由（前端由 nginx 统一 serve）
     let app = Router::new()

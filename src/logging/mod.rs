@@ -1,6 +1,11 @@
 //! 日志模块
 //!
 //! 负责请求日志写入和定期清理
+//!
+//! 使用批量写入器（BatchLogger）将日志攒批后每 15s 写入一次 DB，
+//! 避免高并发时每个请求都竞争 DB 连接。
+
+use std::sync::Arc;
 
 use chrono::Utc;
 use sqlx::PgPool;
@@ -29,6 +34,200 @@ pub struct RequestLogEntry {
     pub response: Option<String>,
     pub error_msg: Option<String>,
     pub tokens_per_second: f64,
+}
+
+/// 每日统计更新
+#[derive(Debug, Clone)]
+pub struct DailyStatsUpdate {
+    pub model_name: String,
+    pub source_tag: String,
+    pub total_tokens: i64,
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+    pub cache_hit: bool,
+    pub cached_tokens: i64,
+    pub spend: f64,
+    pub is_error: bool,
+}
+
+/// 批量日志写入器
+///
+/// 代理请求结束后将日志条目发到内存通道，后台任务每 15s 批量 flush 一次。
+/// 大幅减少 DB 连接竞争，适合低资源高并发场景。
+pub struct BatchLogger {
+    tx: tokio::sync::mpsc::UnboundedSender<LogMessage>,
+}
+
+enum LogMessage {
+    RequestLog(RequestLogEntry),
+    DailyStats(DailyStatsUpdate),
+}
+
+impl BatchLogger {
+    /// 启动批量写入器，返回句柄
+    ///
+    /// `flush_interval`：批量写入间隔，默认 15 秒
+    pub fn start(db: PgPool, flush_interval: std::time::Duration) -> Arc<Self> {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<LogMessage>();
+
+        tokio::spawn(async move {
+            let mut batch_logs: Vec<RequestLogEntry> = Vec::new();
+            let mut batch_stats: Vec<DailyStatsUpdate> = Vec::new();
+            let mut rx = rx;
+            let mut interval = tokio::time::interval(flush_interval);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+            loop {
+                tokio::select! {
+                    // 收集消息直到间隔到期
+                    _ = interval.tick() => {
+                        if !batch_logs.is_empty() || !batch_stats.is_empty() {
+                            Self::flush_batch(&db, &batch_logs, &batch_stats).await;
+                            batch_logs.clear();
+                            batch_stats.clear();
+                        }
+                    }
+                    msg = rx.recv() => {
+                        match msg {
+                            Some(LogMessage::RequestLog(entry)) => {
+                                batch_logs.push(entry);
+                            }
+                            Some(LogMessage::DailyStats(update)) => {
+                                batch_stats.push(update);
+                            }
+                            None => {
+                                // 通道关闭，最后一次 flush
+                                if !batch_logs.is_empty() || !batch_stats.is_empty() {
+                                    Self::flush_batch(&db, &batch_logs, &batch_stats).await;
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        Arc::new(Self { tx })
+    }
+
+    /// 异步写入请求日志（实际入队，不阻塞）
+    pub fn write_log(&self, entry: RequestLogEntry) {
+        let _ = self.tx.send(LogMessage::RequestLog(entry));
+    }
+
+    /// 异步更新每日统计（实际入队，不阻塞）
+    pub fn update_stats(&self, update: DailyStatsUpdate) {
+        let _ = self.tx.send(LogMessage::DailyStats(update));
+    }
+
+    /// 批量 flush：一次事务写入所有日志 + 统计
+    async fn flush_batch(db: &PgPool, logs: &[RequestLogEntry], stats: &[DailyStatsUpdate]) {
+        if logs.is_empty() && stats.is_empty() {
+            return;
+        }
+
+        let start = std::time::Instant::now();
+
+        // 批量写入 request_logs
+        if !logs.is_empty() {
+            Self::batch_insert_logs(db, logs).await;
+        }
+
+        // 批量更新 daily_stats
+        for stat in stats {
+            if let Err(e) = update_daily_stats(
+                db,
+                &stat.model_name,
+                &stat.source_tag,
+                stat.total_tokens,
+                stat.prompt_tokens,
+                stat.completion_tokens,
+                stat.cache_hit,
+                stat.cached_tokens,
+                stat.spend,
+                stat.is_error,
+            )
+            .await
+            {
+                tracing::error!("批量 daily_stats 更新失败: {}", e);
+            }
+        }
+
+        let elapsed = start.elapsed();
+        if elapsed > std::time::Duration::from_millis(100) {
+            tracing::warn!(
+                "批量写入耗时较长: {} 条日志 + {} 条统计, 耗时 {:?}",
+                logs.len(),
+                stats.len(),
+                elapsed
+            );
+        }
+    }
+
+    /// 批量 INSERT request_logs（单条 SQL 插入多条）
+    async fn batch_insert_logs(db: &PgPool, entries: &[RequestLogEntry]) {
+        // 分批写入，每批最多 100 条
+        for chunk in entries.chunks(100) {
+            let mut query_builder = String::from(
+                "INSERT INTO request_logs (
+                    id, model_name, provider, api_base, source_tag,
+                    start_time, end_time, completion_start_time, duration_ms,
+                    total_tokens, prompt_tokens, completion_tokens,
+                    cache_hit, cache_key, cached_tokens, spend, status,
+                    messages, response, error_msg, tokens_per_second, created_at
+                ) VALUES "
+            );
+
+            let mut param_idx = 1;
+            let mut first = true;
+            for _ in chunk {
+                if !first {
+                    query_builder.push_str(", ");
+                }
+                first = false;
+                query_builder.push_str(&format!(
+                    "(${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, NOW())",
+                    param_idx, param_idx + 1, param_idx + 2, param_idx + 3, param_idx + 4,
+                    param_idx + 5, param_idx + 6, param_idx + 7, param_idx + 8,
+                    param_idx + 9, param_idx + 10, param_idx + 11,
+                    param_idx + 12, param_idx + 13, param_idx + 14, param_idx + 15, param_idx + 16,
+                    param_idx + 17, param_idx + 18, param_idx + 19, param_idx + 20,
+                ));
+                param_idx += 21;
+            }
+
+            let mut query = sqlx::query(&query_builder);
+            for entry in chunk {
+                query = query
+                    .bind(&entry.id)
+                    .bind(&entry.model_name)
+                    .bind(&entry.provider)
+                    .bind(&entry.api_base)
+                    .bind(&entry.source_tag)
+                    .bind(&entry.start_time)
+                    .bind(&entry.end_time)
+                    .bind(&entry.completion_start_time)
+                    .bind(entry.duration_ms)
+                    .bind(entry.total_tokens)
+                    .bind(entry.prompt_tokens)
+                    .bind(entry.completion_tokens)
+                    .bind(entry.cache_hit as i32)
+                    .bind(&entry.cache_key)
+                    .bind(entry.cached_tokens)
+                    .bind(entry.spend)
+                    .bind(&entry.status)
+                    .bind(&entry.messages)
+                    .bind(&entry.response)
+                    .bind(&entry.error_msg)
+                    .bind(entry.tokens_per_second);
+            }
+
+            if let Err(e) = query.execute(db).await {
+                tracing::error!("批量日志写入失败 ({} 条): {}", chunk.len(), e);
+            }
+        }
+    }
 }
 
 /// 写入请求日志
@@ -129,38 +328,118 @@ pub async fn update_daily_stats(
 
 /// 启动日志清理任务
 ///
-/// 每 6 小时清理一次超过保留天数的日志
+/// 滑动窗口策略：
+/// - 超过 7 天：清空 messages 和 response（保留指标用于统计）
+/// - 超过 BODY_RETENTION_DAYS（默认 30）：删除整条记录
+/// 任务启动时立即执行一次，之后每 6 小时执行一次。
 pub fn start_cleanup_task(db: PgPool, retention_days: i64) {
     tokio::spawn(async move {
-        // 启动时立即清理一次
-        cleanup_expired_logs(&db, retention_days).await;
+        // 启动时立即执行一次
+        sliding_window_cleanup(&db).await;
 
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(6 * 3600));
         loop {
             interval.tick().await;
-            cleanup_expired_logs(&db, retention_days).await;
+            sliding_window_cleanup(&db).await;
         }
     });
 }
 
-/// 清理过期日志
-async fn cleanup_expired_logs(db: &PgPool, retention_days: i64) {
-    let result = sqlx::query(
-        "DELETE FROM request_logs WHERE created_at < NOW() - ($1 || ' days')::interval",
+/// 滑动窗口清理
+///
+/// 步骤（按顺序）：
+/// 1. 重建 daily_stats（在删数据前保留统计）
+/// 2. 超过 7 天的记录清空 messages/response
+/// 3. 超过 BODY_RETENTION_DAYS 天（默认 30）的记录删除
+/// 4. VACUUM 回收空间
+const BODY_RETENTION_DAYS: i64 = 30;
+async fn sliding_window_cleanup(db: &PgPool) {
+
+    // ── 1. 重建 daily_stats（备份前确保统计完整）──
+    tracing::info!("开始重建 daily_stats...");
+    let rebuild = sqlx::query(
+        r#"
+        INSERT INTO daily_stats (date, model_name, source_tag, total_requests,
+            total_tokens, prompt_tokens, completion_tokens, cache_hits,
+            cached_tokens, total_spend, failed_requests)
+        SELECT
+            DATE(start_time) as date,
+            model_name,
+            source_tag,
+            COUNT(*)::bigint as total_requests,
+            SUM(total_tokens)::bigint as total_tokens,
+            SUM(prompt_tokens)::bigint as prompt_tokens,
+            SUM(completion_tokens)::bigint as completion_tokens,
+            SUM(CASE WHEN cache_hit != 0 THEN 1 ELSE 0 END)::bigint as cache_hits,
+            SUM(cached_tokens)::bigint as cached_tokens,
+            SUM(spend) as total_spend,
+            SUM(CASE WHEN status != 'success' THEN 1 ELSE 0 END)::bigint as failed_requests
+        FROM request_logs
+        WHERE start_time >= CURRENT_DATE - INTERVAL '1 day'
+        GROUP BY DATE(start_time), model_name, source_tag
+        ON CONFLICT(date, model_name, source_tag) DO UPDATE SET
+            total_requests        = EXCLUDED.total_requests,
+            total_tokens          = EXCLUDED.total_tokens,
+            prompt_tokens         = EXCLUDED.prompt_tokens,
+            completion_tokens     = EXCLUDED.completion_tokens,
+            cache_hits            = EXCLUDED.cache_hits,
+            cached_tokens         = EXCLUDED.cached_tokens,
+            total_spend           = EXCLUDED.total_spend,
+            failed_requests       = EXCLUDED.failed_requests
+        "#,
     )
-    .bind(retention_days)
     .execute(db)
     .await;
 
-    match result {
+    match rebuild {
         Ok(r) => {
             if r.rows_affected() > 0 {
-                tracing::info!("清理了 {} 条过期日志", r.rows_affected());
+                tracing::info!("daily_stats 重建完成，影响 {} 行", r.rows_affected());
             }
         }
-        Err(e) => {
-            tracing::error!("日志清理失败: {}", e);
+        Err(e) => tracing::error!("daily_stats 重建失败: {}", e),
+    }
+
+    // ── 2. 超过 7 天的记录：清空 messages 和 response（保留指标）──
+    let clear_body = sqlx::query(
+        r#"
+        UPDATE request_logs
+        SET messages = NULL, response = NULL
+        WHERE created_at < CURRENT_DATE - INTERVAL '7 days'
+          AND (messages IS NOT NULL OR response IS NOT NULL)
+        "#,
+    )
+    .execute(db)
+    .await;
+
+    match clear_body {
+        Ok(r) => {
+            if r.rows_affected() > 0 {
+                tracing::info!("已清空 {} 条记录的 messages/response（>7天）", r.rows_affected());
+            }
         }
+        Err(e) => tracing::error!("清空 messages/response 失败: {}", e),
+    }
+
+    // ── 3. 超过 BODY_RETENTION_DAYS 天的记录删除 ──
+    let delete_old = sqlx::query(
+        "DELETE FROM request_logs WHERE created_at < CURRENT_DATE - $1::interval",
+    )
+    .bind(format!("{} days", BODY_RETENTION_DAYS))
+    .execute(db)
+    .await;
+
+    match delete_old {
+        Ok(r) => {
+            if r.rows_affected() > 0 {
+                tracing::info!(
+                    "已删除 {} 条过期记录（>{}天）",
+                    r.rows_affected(),
+                    BODY_RETENTION_DAYS
+                );
+            }
+        }
+        Err(e) => tracing::error!("删除过期记录失败: {}", e),
     }
 }
 

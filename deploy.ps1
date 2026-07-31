@@ -1,15 +1,25 @@
 # TransparentLLM 一键部署脚本（WSL Docker 编译 → 镜像 → 服务器）
 # 前提：WSL2 + Docker Engine 已安装
-# 使用：.\deploy.ps1
+# 使用：.\deploy.ps1 -Key "你的32字节密钥"
+# 注意：-Key 为生产加密密钥，必须显式传入（勿使用公开默认值）
 
 param(
-    [string]$Server = "ydl-server_new",
+    [string]$Server = "ydl-server",
     [string]$RemoteDir = "/root/ydl-projects/transparentllm",
-    [string]$Key = "12345678901234567890123456789012"
+    [string]$Key = $env:TRANSPARENTLLM_ENCRYPTION_KEY
 )
 
 $ErrorActionPreference = "Stop"
-$WslPath = "/mnt/c/Users/ydl/Desktop/TransparentLLM"
+$WslPath = "/mnt/e/projects/TransparentLLM"
+
+# 校验加密密钥：必须显式提供，防止用公开默认值或空值覆盖生产配置
+if ([string]::IsNullOrEmpty($Key)) {
+    Write-Host "错误: 未提供加密密钥。请用 -Key 参数或设置环境变量 TRANSPARENTLLM_ENCRYPTION_KEY" -ForegroundColor Red
+    exit 1
+}
+if ($Key.Length -ne 32) {
+    Write-Host "警告: 密钥长度 ${($Key.Length)} 不是 32 字节，可能无法正常工作" -ForegroundColor Yellow
+}
 
 # 启动 Docker daemon
 Write-Host "=== 0/4 启动 Docker ===" -ForegroundColor Cyan
@@ -34,7 +44,7 @@ wsl -u root bash -c "cd ${WslPath} && docker build -t transparentllm:latest ."
 
 # 3. 导出镜像 + 上传（含前端文件和 nginx 配置）
 Write-Host "`n=== 3/4 上传镜像 + 前端文件 ===" -ForegroundColor Cyan
-wsl -u root bash -c "cd ${WslPath} && docker save transparentllm:latest -o /mnt/c/Users/ydl/Desktop/TransparentLLM/transparentllm.tar"
+wsl -u root bash -c "cd ${WslPath} && docker save transparentllm:latest -o ${WslPath}/transparentllm.tar"
 
 ssh $Server "mkdir -p $RemoteDir/frontend/out /root/ydl-projects/nginx/sites/llm"
 

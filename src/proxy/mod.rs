@@ -11,15 +11,15 @@ use std::time::{Duration, Instant};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 
-use crate::logging::{RequestLogEntry, update_daily_stats, write_request_log};
+use crate::logging::{DailyStatsUpdate, RequestLogEntry};
 use crate::models::{ModelConfigFull, decrypt_api_key};
-use crate::source_tag::parse_source_tag;
+use crate::source_tag::{parse_source_tag, detect_source_from_body};
 use crate::AppState;
 
 use self::parser::UsageStats;
 
-/// 上游请求超时
-const UPSTREAM_TIMEOUT: Duration = Duration::from_secs(120);
+/// 上游请求超时（10 分钟）
+const UPSTREAM_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// 转发给上游的安全请求头（不转发 accept-encoding，让 reqwest 自动解压）
 const FORWARD_HEADERS: &[&str] = &[
@@ -39,7 +39,7 @@ fn http_client() -> &'static reqwest::Client {
     CLIENT.get_or_init(|| {
         reqwest::Client::builder()
             .timeout(UPSTREAM_TIMEOUT)
-            .pool_max_idle_per_host(5)
+            .pool_max_idle_per_host(10)
             .connect_timeout(Duration::from_secs(5))
             .build()
             .expect("创建 HTTP 客户端失败")
@@ -194,32 +194,30 @@ pub async fn proxy_request(
         .unwrap_or("unknown")
         .to_string();
 
-    // 解析 provider-model_name 格式（用第一个 - 分隔），优先精确匹配
-    let model_config = if let Some((prov, name)) = model_name.split_once('-') {
-        match crate::models::get_model_by_name_and_provider(&state.db, name, prov).await {
-            Ok(Some(cfg)) => Some(cfg),
-            _ => {
-                // 精确匹配失败，回退到仅按 model_name 匹配
-                crate::models::get_model_by_name(&state.db, &model_name).await.ok().flatten()
-            }
-        }
-    } else {
-        crate::models::get_model_by_name(&state.db, &model_name).await.ok().flatten()
+    // 从缓存查找模型（key: "{provider}-{model_name}"）
+    // 缓存由 AppState 维护，启动时加载，CRUD 操作后自动重建
+    let model_config = {
+        let cache = state.model_cache.read().unwrap();
+        cache.get(&model_name).cloned()
     };
 
     let model_config = match model_config {
         Some(cfg) => cfg,
         None => {
             // 记录错误日志
+            let err_source_tag = match detect_source_from_body(&body) {
+                Some(tag) => tag.to_string(),
+                None => parse_source_tag(
+                    headers.get("user-agent").and_then(|v| v.to_str().ok()).unwrap_or(""),
+                    headers.get("x-source").and_then(|v| v.to_str().ok()).unwrap_or(""),
+                ).to_string(),
+            };
             let log_entry = RequestLogEntry {
                 id: uuid::Uuid::new_v4().to_string(),
                 model_name: model_name.clone(),
                 provider: String::new(),
                 api_base: String::new(),
-                source_tag: parse_source_tag(
-                    headers.get("user-agent").and_then(|v| v.to_str().ok()).unwrap_or(""),
-                    headers.get("x-source").and_then(|v| v.to_str().ok()).unwrap_or(""),
-                ).to_string(),
+                source_tag: err_source_tag,
                 start_time: start_time.clone(),
                 end_time: chrono::Utc::now().to_rfc3339(),
                 completion_start_time: None,
@@ -233,8 +231,7 @@ pub async fn proxy_request(
                 error_msg: Some(format!("模型未配置: {}", model_name)),
                 tokens_per_second: 0.0,
             };
-            let db = state.db.clone();
-            tokio::spawn(async move { write_request_log(&db, &log_entry).await.ok(); });
+            state.logger.write_log(log_entry);
             return Err(ProxyError::ModelNotFound(model_name));
         }
     };
@@ -242,15 +239,19 @@ pub async fn proxy_request(
     let mut api_key = decrypt_api_key(&model_config.encrypted_api_key, &state.config.encryption_key)
         .map_err(|e| {
             // 记录错误日志
+            let err_source_tag = match detect_source_from_body(&body) {
+                Some(tag) => tag.to_string(),
+                None => parse_source_tag(
+                    headers.get("user-agent").and_then(|v| v.to_str().ok()).unwrap_or(""),
+                    headers.get("x-source").and_then(|v| v.to_str().ok()).unwrap_or(""),
+                ).to_string(),
+            };
             let log_entry = RequestLogEntry {
                 id: uuid::Uuid::new_v4().to_string(),
                 model_name: model_name.clone(),
                 provider: model_config.provider.clone(),
                 api_base: model_config.api_base.clone(),
-                source_tag: parse_source_tag(
-                    headers.get("user-agent").and_then(|v| v.to_str().ok()).unwrap_or(""),
-                    headers.get("x-source").and_then(|v| v.to_str().ok()).unwrap_or(""),
-                ).to_string(),
+                source_tag: err_source_tag,
                 start_time: start_time.clone(),
                 end_time: chrono::Utc::now().to_rfc3339(),
                 completion_start_time: None,
@@ -264,8 +265,7 @@ pub async fn proxy_request(
                 error_msg: Some(format!("Key 解密失败: {}", e)),
                 tokens_per_second: 0.0,
             };
-            let db = state.db.clone();
-            tokio::spawn(async move { write_request_log(&db, &log_entry).await.ok(); });
+            state.logger.write_log(log_entry);
             ProxyError::UpstreamError(format!("Key 解密失败: {}", e), None)
         })?;
 
@@ -282,8 +282,7 @@ pub async fn proxy_request(
         if !model_config.upstream_model_name.is_empty() {
             model_config.upstream_model_name.clone()
         } else {
-            // 移除 model_name 中的 provider- 前缀（如果存在）
-            model_name.split_once('-').map(|(_, n)| n.to_string()).unwrap_or(model_name.clone())
+            model_config.model_name.clone()
         }
     };
     let mut upstream_body = body.clone();
@@ -299,7 +298,13 @@ pub async fn proxy_request(
         .get("x-source")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    let source_tag = parse_source_tag(user_agent, x_source).to_string();
+    // 先从头解析来源，再检查请求体中有无特征签名覆盖
+    let mut source_tag = parse_source_tag(user_agent, x_source).to_string();
+    if source_tag == "unknown" {
+        if let Some(body_tag) = detect_source_from_body(&body) {
+            source_tag = body_tag.to_string();
+        }
+    }
 
     let is_stream = upstream_body
         .get("stream")
@@ -337,6 +342,13 @@ pub async fn proxy_request(
         }
     }
 
+    // 记录请求体大小（用于排查上游 413 问题）
+    let body_size = serde_json::to_string(&upstream_body).map(|s| s.len()).unwrap_or(0);
+    tracing::info!(
+        "转发请求 model={} upstream={} body_size={} bytes ({:.2} MB)",
+        model_config.model_name, upstream_url, body_size, body_size as f64 / 1_048_576.0
+    );
+
     let response = request_builder
         .json(&upstream_body)
         .send()
@@ -369,14 +381,14 @@ pub async fn proxy_request(
                 error_msg: Some(err_msg.clone()),
                 tokens_per_second: 0.0,
             };
-            let db = state.db.clone();
-            tokio::spawn(async move { write_request_log(&db, &log_entry).await.ok(); });
+            state.logger.write_log(log_entry);
             ProxyError::UpstreamError(err_msg, None)
         })?;
 
     let status_code = response.status();
-    // 非流式请求：响应头到达时间即 TTFT
-    let completion_start_time = chrono::Utc::now().to_rfc3339();
+    // 非流式请求：上游一次性返回完整响应，不存在 TTFT 概念，置 None
+    // （若记录响应头到达时间，会等于总耗时，导致速率兜底被 .max(1) 放大）
+    let completion_start_time: Option<String> = None;
     let response_text = response
         .text()
         .await
@@ -394,7 +406,6 @@ pub async fn proxy_request(
         Err(e) => {
             if !status_code.is_success() {
                 // 非 200 响应且无法解析 JSON —— 先写日志再返回错误
-                let db = state.db.clone();
                 let err_detail = format!("上游返回 {}: {}", status_code.as_u16(), &response_text[..response_text.len().min(500)]);
                 let log_entry = RequestLogEntry {
                     id: uuid::Uuid::new_v4().to_string(),
@@ -404,7 +415,7 @@ pub async fn proxy_request(
                     source_tag: source_tag.clone(),
                     start_time: start_time.clone(),
                     end_time: chrono::Utc::now().to_rfc3339(),
-                    completion_start_time: Some(completion_start_time.clone()),
+                    completion_start_time: completion_start_time.clone(),
                     duration_ms: start.elapsed().as_millis() as i64,
                     total_tokens: 0, prompt_tokens: 0, completion_tokens: 0,
                     cache_hit: false, cache_key: None, cached_tokens: 0,
@@ -415,7 +426,7 @@ pub async fn proxy_request(
                     error_msg: Some(err_detail.clone()),
                     tokens_per_second: 0.0,
                 };
-                tokio::spawn(async move { write_request_log(&db, &log_entry).await.ok(); });
+                state.logger.write_log(log_entry);
                 return Err(ProxyError::UpstreamError(err_detail, None));
             }
             // 尝试解析 SSE 流式格式（某些提供商在 stream=false 时也返回 SSE）
@@ -441,19 +452,25 @@ pub async fn proxy_request(
         + (usage.completion_tokens as f64 / 1_000_000.0) * model_config.output_price;
     let success = status_code.is_success();
 
-    // 异步写入日志和统计（非流式）
-    let db = state.db.clone();
-    let mn = model_config.model_name.clone();
-    let st = source_tag.clone();
     let tps = if usage.tokens_per_second > 0.0 {
         usage.tokens_per_second
     } else if usage.completion_tokens > 0 && duration_ms > 0 {
-        // 优先用 completion_tokens / duration 计算输出速率
-        usage.completion_tokens as f64 / (duration_ms as f64 / 1000.0)
+        // 用 completion_tokens / (总耗时 - TTFT) 计算输出速率
+        // 非流式请求 TTFT 为 None → ttft_ms=0 → 输出耗时 = 总耗时（decode 时长）
+        let ttft_ms = completion_start_time
+            .as_deref()
+            .and_then(|ct| chrono::DateTime::parse_from_rfc3339(ct).ok())
+            .and_then(|ct| {
+                chrono::DateTime::parse_from_rfc3339(&start_time)
+                    .ok()
+                    .map(|st| (ct - st).num_milliseconds())
+            })
+            .unwrap_or(0);
+        let output_ms = (duration_ms - ttft_ms).max(1) as f64;
+        usage.completion_tokens as f64 / (output_ms / 1000.0)
     } else {
         0.0
     };
-
     let log_entry = RequestLogEntry {
         id: uuid::Uuid::new_v4().to_string(),
         model_name: model_config.model_name.clone(),
@@ -462,7 +479,7 @@ pub async fn proxy_request(
         source_tag: source_tag.clone(),
         start_time: start_time.clone(),
         end_time: end_time.clone(),
-        completion_start_time: Some(completion_start_time),
+        completion_start_time,
         duration_ms,
         total_tokens: usage.total_tokens as i64,
         prompt_tokens: usage.prompt_tokens as i64,
@@ -478,13 +495,18 @@ pub async fn proxy_request(
         tokens_per_second: tps,
     };
 
-    tokio::spawn(async move {
-        write_request_log(&db, &log_entry).await.ok();
-        if let Err(e) = update_daily_stats(&db, &mn, &st, usage.total_tokens as i64,
-            usage.prompt_tokens as i64, usage.completion_tokens as i64,
-            usage.cache_hit, usage.cached_tokens as i64, spend, !success).await {
-            tracing::error!("daily_stats 更新失败: {}", e);
-        }
+    // 通过批量写入器入队（非阻塞，后台每 15s flush 一次）
+    state.logger.write_log(log_entry);
+    state.logger.update_stats(DailyStatsUpdate {
+        model_name: model_config.model_name.clone(),
+        source_tag: source_tag.clone(),
+        total_tokens: usage.total_tokens as i64,
+        prompt_tokens: usage.prompt_tokens as i64,
+        completion_tokens: usage.completion_tokens as i64,
+        cache_hit: usage.cache_hit,
+        cached_tokens: usage.cached_tokens as i64,
+        spend,
+        is_error: !success,
     });
 
     Ok(Response::builder()
@@ -512,6 +534,13 @@ async fn proxy_stream_request(
     let upstream_url = format!(
         "{}/chat/completions",
         model_config.api_base.trim_end_matches('/')
+    );
+
+    // 记录请求体大小（用于排查上游 413 问题）
+    let body_size = serde_json::to_string(&body).map(|s| s.len()).unwrap_or(0);
+    tracing::info!(
+        "SSE 转发请求 model={} upstream={} body_size={} bytes ({:.2} MB)",
+        model_config.model_name, upstream_url, body_size, body_size as f64 / 1_048_576.0
     );
 
     let response = client
@@ -549,8 +578,7 @@ async fn proxy_stream_request(
                 error_msg: Some(err_msg.clone()),
                 tokens_per_second: 0.0,
             };
-            let db = state.db.clone();
-            tokio::spawn(async move { write_request_log(&db, &log_entry).await.ok(); });
+            state.logger.write_log(log_entry);
             ProxyError::UpstreamError(err_msg, None)
         })?;
 
@@ -562,7 +590,6 @@ async fn proxy_stream_request(
             .await
             .unwrap_or_else(|_| "Unknown error".into());
 
-        let db = state.db.clone();
         let mn = model_config.model_name.clone();
         let st = source_tag.clone();
         let end_time = chrono::Utc::now().to_rfc3339();
@@ -588,11 +615,12 @@ async fn proxy_stream_request(
             tokens_per_second: 0.0,
         };
 
-        tokio::spawn(async move {
-            write_request_log(&db, &log_entry).await.ok();
-            if let Err(e) = update_daily_stats(&db, &mn, &st, 0, 0, 0, false, 0, 0.0, true).await {
-                tracing::error!("daily_stats 更新失败: {}", e);
-            }
+        state.logger.write_log(log_entry);
+        state.logger.update_stats(DailyStatsUpdate {
+            model_name: mn,
+            source_tag: st,
+            total_tokens: 0, prompt_tokens: 0, completion_tokens: 0,
+            cache_hit: false, cached_tokens: 0, spend: 0.0, is_error: true,
         });
 
         return Err(ProxyError::UpstreamError(error_body, None));
@@ -610,13 +638,13 @@ async fn proxy_stream_request(
         model_config.input_price
     };
     let source_tag_clone = source_tag.clone();
-    let db = state.db.clone();
+    let logger = state.logger.clone();
     let body_json = serde_json::to_string(&body).unwrap_or_default();
 
     let stream = sse::sse_stream_forward(
         response,
         move |final_body: Option<serde_json::Value>, completion_start_time: Option<String>, error_msg: Option<String>| {
-            let db = db.clone();
+            let logger = logger.clone();
             let mn = model_name_clone.clone();
             let st = source_tag_clone.clone();
             let st_time = start_time.clone();
@@ -639,11 +667,21 @@ async fn proxy_stream_request(
                     + (usage.cached_tokens as f64 / 1_000_000.0) * cache_price
                     + (usage.completion_tokens as f64 / 1_000_000.0) * output_price;
 
-                // 速率兜底：优先用 completion_tokens / duration
+                // 速率兜底：优先用上游返回值，否则用 completion_tokens / (总耗时 - TTFT)
                 let tps = if usage.tokens_per_second > 0.0 {
                     usage.tokens_per_second
                 } else if usage.completion_tokens > 0 && duration_ms > 0 {
-                    usage.completion_tokens as f64 / (duration_ms as f64 / 1000.0)
+                    let ttft_ms = completion_start_time
+                        .as_deref()
+                        .and_then(|ct| chrono::DateTime::parse_from_rfc3339(ct).ok())
+                        .and_then(|ct| {
+                            chrono::DateTime::parse_from_rfc3339(&st_time)
+                                .ok()
+                                .map(|st| (ct - st).num_milliseconds())
+                        })
+                        .unwrap_or(0);
+                    let output_ms = (duration_ms - ttft_ms).max(1) as f64;
+                    usage.completion_tokens as f64 / (output_ms / 1000.0)
                 } else {
                     0.0
                 };
@@ -675,22 +713,18 @@ async fn proxy_stream_request(
                     tokens_per_second: tps,
                 };
 
-                if let Err(e) = write_request_log(&db, &log_entry).await {
-                    tracing::error!("SSE 日志写入失败: {}", e);
-                }
-
-                if let Err(e) = update_daily_stats(
-                    &db, &mn, &st,
-                    usage.total_tokens as i64,
-                    usage.prompt_tokens as i64,
-                    usage.completion_tokens as i64,
-                    usage.cache_hit,
-                    usage.cached_tokens as i64,
+                logger.write_log(log_entry);
+                logger.update_stats(DailyStatsUpdate {
+                    model_name: mn,
+                    source_tag: st,
+                    total_tokens: usage.total_tokens as i64,
+                    prompt_tokens: usage.prompt_tokens as i64,
+                    completion_tokens: usage.completion_tokens as i64,
+                    cache_hit: usage.cache_hit,
+                    cached_tokens: usage.cached_tokens as i64,
                     spend,
                     is_error,
-                ).await {
-                    tracing::error!("SSE daily_stats 更新失败: {}", e);
-                }
+                });
             }
         },
     );

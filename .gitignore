@@ -40,6 +40,17 @@ fake_data*.sql
 frontend/-w
 frontend/EXPERIENCE.md
 
+## 生产配置（含敏感信息，不入库）
+docker-compose.yaml
+
+## 备份与脱敏工具
+*.bak
+sanitize_*.py
+
+## 临时图表
+token_distribution.png
+plot_token_dist.py
+
 ## 日志和大文件
 backend.log
 *.tar

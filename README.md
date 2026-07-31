@@ -23,6 +23,7 @@
 
 ```bash
 # 1. 设置加密密钥（32 字节任意字符串）
+#    ⚠️ 仅限本地开发示例值！生产环境必须使用随机密钥，勿沿用此值
 #    Windows PowerShell:
 $env:TRANSPARENTLLM_ENCRYPTION_KEY="12345678901234567890123456789012"
 #    Linux / macOS:
@@ -33,11 +34,14 @@ cargo run
 
 # 3. 浏览器访问
 #    管理面板: http://127.0.0.1:18400
-#    默认密码: admin
+#    默认密码: admin（首次登录后请立即修改）
 
 # 4. 前端开发（可选，独立运行）
 cd frontend && npm install && npm run dev   # → http://127.0.0.1:3000
 ```
+
+> **安全提示**：生产部署请使用 `openssl rand -hex 16` 生成随机加密密钥，
+> 并通过环境变量或 `docker-compose.example.yaml` 中 `${TRANSPARENTLLM_DB_PASSWORD}` 方式注入数据库密码，**切勿硬编码明文密码到配置/脚本中**。
 
 ## 代理使用
 

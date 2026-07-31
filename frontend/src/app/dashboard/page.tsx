@@ -64,9 +64,8 @@ function StatCard({ label, value, sub, color }: { label: string; value: string; 
 /** 自定义纵坐标 — 在图表 SVG 内渲染，标记为 clip-excluded */
 function DashboardYAxis({ formatTick }: { formatTick?: (v: number) => string }) {
   const yScale = useYScale();
-  const { innerHeight, margin } = useChartStable();
   const ticks = yScale.ticks ? yScale.ticks(5) : [];
-  const x = -(margin.left - 8);
+  const x = -8;
   return (
     <>
       {ticks.map((tick) => {
@@ -357,12 +356,12 @@ export default function DashboardPage() {
                   ))}
                 </div>
               </div>
-              <div className="relative w-full" style={{ height: 400, paddingLeft: 50, paddingRight: 24 }}>
+              <div className="relative w-full overflow-visible" style={{ height: 400, paddingLeft: 65, paddingRight: 24 }}>
                 <AreaChart data={trendStackedData.length > 0 ? trendStackedData : [{ date: dayjs().format("YYYY-MM-DD"), _placeholder: 100 }]} xDataKey="date" aspectRatio="unset"
                   status={trendStackedData.length === 0 ? "loading" : "ready"}
                   loadingLabel="暂无用量数据"
                   yDomainTween={false}
-                  margin={{ top: 40, right: 40, bottom: 40, left: 40 }}
+                  margin={{ top: 40, right: 40, bottom: 40, left: 65 }}// 左间距留出纵坐标标签空间
                   style={{ position: "absolute", inset: 0 }}>
                   <DashboardYAxis formatTick={(v) => {
                     if (chartType === "spend") return formatSpend(v);
