@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { Typography, Spin, Card, Tag, Space } from "antd";
+import { Typography, Spin, Card, Tag, Space, message, Button } from "antd";
 import {
   CommandCard,
   ModelSelect,
@@ -13,6 +13,7 @@ import {
   CodeOutlined,
   ThunderboltOutlined,
   GlobalOutlined,
+  CopyOutlined,
 } from "@ant-design/icons";
 
 const { Title, Text, Paragraph } = Typography;
@@ -180,7 +181,69 @@ export default function DocsPage() {
           title=""
           commandWithJq={curlChatWithJq}
           commandWithoutJq={curlChatWithoutJq}
+          disableJq={stream}
         />
+      </Card>
+
+      {/* ===== 连接信息 ===== */}
+      <Card
+        style={{
+          marginBottom: 24,
+          borderRadius: 16,
+          border: "1px solid rgba(0,0,0,0.06)",
+          boxShadow: "0 2px 8px rgba(0,0,0,0.04)",
+        }}
+      >
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+            <span style={{ fontSize: 18 }}>⚡</span>
+            <Text strong style={{ fontSize: 15 }}>连接信息</Text>
+            <Text type="secondary" style={{ fontSize: 13 }}>一键复制</Text>
+          </div>
+        </div>
+        <div
+          style={{
+            background: "#fafafa",
+            borderRadius: 12,
+            padding: 16,
+            border: "1px solid rgba(0,0,0,0.06)",
+          }}
+        >
+          <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 16 }}>
+            <div>
+              <Text type="secondary" style={{ fontSize: 12 }}>Base URL</Text>
+              <div style={{ fontSize: 13, fontFamily: "monospace", color: "#1677ff" }}>
+                {apiBase}/v1
+              </div>
+            </div>
+            <div>
+              <Text type="secondary" style={{ fontSize: 12 }}>Model Name</Text>
+              <div style={{ fontSize: 13, fontFamily: "monospace" }}>
+                {selectedModel || "（请选择模型）"}
+              </div>
+            </div>
+            <div>
+              <Text type="secondary" style={{ fontSize: 12 }}>API Key</Text>
+              <div style={{ fontSize: 13, fontFamily: "monospace", color: "#fa8c16" }}>
+                admin
+              </div>
+            </div>
+          </div>
+          <Button
+            type="primary"
+            icon={<CopyOutlined />}
+            disabled={!selectedModel}
+            style={{ borderRadius: 6, fontWeight: 500 }}
+            onClick={() => {
+              const text = `url: ${apiBase}/v1\nmodelname: ${selectedModel}\nkey: admin`;
+              navigator.clipboard.writeText(text).then(() => {
+                message.success("连接信息已复制 ✅");
+              });
+            }}
+          >
+            一键复制
+          </Button>
+        </div>
       </Card>
 
       {/* ===== API 端点 ===== */}

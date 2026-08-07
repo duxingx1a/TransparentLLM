@@ -407,24 +407,30 @@ async fn sliding_window_cleanup(db: &PgPool, default_retention_days: i64) {
     }
 
     // ── 2. 超过 retention_days 天的记录删除整条 ──
-    let delete_old = sqlx::query(
+    let deleted = sqlx::query(
         "DELETE FROM request_logs WHERE created_at < CURRENT_DATE - $1::interval",
     )
     .bind(format!("{} days", retention_days))
     .execute(db)
-    .await;
+    .await
+    .map(|r| r.rows_affected())
+    .unwrap_or_else(|e| {
+        tracing::error!("删除过期记录失败: {}", e);
+        0
+    });
 
-    match delete_old {
-        Ok(r) => {
-            if r.rows_affected() > 0 {
-                tracing::info!(
-                    "已删除 {} 条过期记录（>{}天）",
-                    r.rows_affected(),
-                    retention_days
-                );
-            }
+    if deleted > 0 {
+        tracing::info!("已删除 {} 条过期记录（>{}天）", deleted, retention_days);
+
+        // ── 3. 物理回收空间（VACUUM FULL 会锁表，仅在有删除时执行）──
+        // 删除记录后 PostgreSQL 不会自动把空间还给操作系统，
+        // 需 VACUUM FULL 才能物理回收（尤其 TOAST 大字段）。
+        // 注意：VACUUM FULL 会短暂锁表，期间写入会阻塞，故仅在确实删了数据时执行。
+        tracing::info!("开始 VACUUM FULL request_logs 物理回收空间...");
+        match sqlx::query("VACUUM FULL request_logs").execute(db).await {
+            Ok(_) => tracing::info!("VACUUM FULL 完成，空间已回收"),
+            Err(e) => tracing::error!("VACUUM FULL 失败: {}", e),
         }
-        Err(e) => tracing::error!("删除过期记录失败: {}", e),
     }
 }
 

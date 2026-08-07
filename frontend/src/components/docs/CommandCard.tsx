@@ -12,6 +12,8 @@ interface CommandCardProps {
   commandWithJq: string;
   commandWithoutJq: string;
   language?: string;
+  /** 流式模式下禁用 jq（流式输出用 jq 会卡住） */
+  disableJq?: boolean;
 }
 
 export function CommandCard({
@@ -20,11 +22,14 @@ export function CommandCard({
   commandWithJq,
   commandWithoutJq,
   language = "bash",
+  disableJq = false,
 }: CommandCardProps) {
   const [useJq, setUseJq] = useState(true);
   const [copied, setCopied] = useState(false);
 
-  const currentCommand = useJq ? commandWithJq : commandWithoutJq;
+  // 流式模式禁用 jq：强制使用非 jq 命令
+  const effectiveUseJq = disableJq ? false : useJq;
+  const currentCommand = effectiveUseJq ? commandWithJq : commandWithoutJq;
 
   const handleCopy = useCallback(() => {
     // 统一换行符为 \n，避免 Windows 上 \r\n 粘贴到终端出现乱码
@@ -53,18 +58,20 @@ export function CommandCard({
           }}
         >
           <div style={{ display: "flex", gap: 6 }}>
-            <Button
-              size="small"
-              type={useJq ? "primary" : "default"}
-              onClick={() => setUseJq(true)}
-              style={{
-                borderRadius: 6,
-                fontWeight: 500,
-                ...(useJq ? { boxShadow: "0 2px 4px rgba(22, 119, 255, 0.2)" } : {}),
-              }}
-            >
-              带 jq
-            </Button>
+            {!disableJq && (
+              <Button
+                size="small"
+                type={useJq ? "primary" : "default"}
+                onClick={() => setUseJq(true)}
+                style={{
+                  borderRadius: 6,
+                  fontWeight: 500,
+                  ...(useJq ? { boxShadow: "0 2px 4px rgba(22, 119, 255, 0.2)" } : {}),
+                }}
+              >
+                带 jq
+              </Button>
+            )}
             <Button
               size="small"
               type={!useJq ? "primary" : "default"}
@@ -196,6 +203,7 @@ export function CommandCard({
             size="small"
             type={useJq ? "primary" : "default"}
             onClick={() => setUseJq(true)}
+            disabled={disableJq}
             style={{
               borderRadius: 6,
               fontWeight: 500,
