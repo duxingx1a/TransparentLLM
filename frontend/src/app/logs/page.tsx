@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
-import { Table, Switch, Select, DatePicker, Button, Empty, ConfigProvider, Tooltip } from "antd";
+import { Table, Switch, Select, DatePicker, Button, Empty, ConfigProvider, Tooltip, Popconfirm, message } from "antd";
 import zhCN from "antd/locale/zh_CN";
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { logsApi, modelsApi } from "@/lib/api";
@@ -50,6 +50,8 @@ export default function LogsPage() {
     field: "start_time",
     order: "desc",
   });
+  const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
+  const [deleting, setDeleting] = useState(false);
 
   // 获取模型列表（供筛选下拉用）
   const { data: modelsData } = useQuery({
@@ -68,6 +70,29 @@ export default function LogsPage() {
   useEffect(() => {
     sessionStorage.setItem("logs-live-tail", JSON.stringify(isLiveTail));
   }, [isLiveTail]);
+
+  // 分页/筛选状态持久化：进入详情再返回时恢复
+  useEffect(() => {
+    try {
+      const stored = sessionStorage.getItem("logs-page-state");
+      if (stored) {
+        const s = JSON.parse(stored);
+        if (typeof s.page === "number") setPage(s.page);
+        if (typeof s.modelFilter === "string") setModelFilter(s.modelFilter);
+        if (typeof s.sourceFilter === "string") setSourceFilter(s.sourceFilter);
+        if (typeof s.statusFilter === "string") setStatusFilter(s.statusFilter);
+        if (typeof s.timeRange === "string") setTimeRange(s.timeRange);
+        if (Array.isArray(s.customRange)) setCustomRange(s.customRange as [string, string]);
+        if (s.sortConfig && typeof s.sortConfig === "object") setSortConfig(s.sortConfig);
+        if (typeof s.showFilters === "boolean") setShowFilters(s.showFilters);
+      }
+    } catch { /* 忽略解析错误 */ }
+  }, []);
+  useEffect(() => {
+    sessionStorage.setItem("logs-page-state", JSON.stringify({
+      page, modelFilter, sourceFilter, statusFilter, timeRange, customRange, sortConfig, showFilters,
+    }));
+  }, [page, modelFilter, sourceFilter, statusFilter, timeRange, customRange, sortConfig, showFilters]);
 
   const dateRange = useMemo((): [string, string] | null => {
     if (customRange) return customRange;
@@ -149,6 +174,22 @@ export default function LogsPage() {
   }, []);
 
   const hasActiveFilters = modelFilter || sourceFilter || statusFilter || customRange;
+
+  // 批量删除选中的日志
+  const handleBatchDelete = useCallback(async () => {
+    if (selectedRowKeys.length === 0) return;
+    setDeleting(true);
+    try {
+      const res = await logsApi.batchDelete(selectedRowKeys.map(String));
+      message.success(`已删除 ${res.deleted} 条日志`);
+      setSelectedRowKeys([]);
+      refetch();
+    } catch (e: any) {
+      message.error(`删除失败：${e.message || "未知错误"}`);
+    } finally {
+      setDeleting(false);
+    }
+  }, [selectedRowKeys, refetch]);
 
   const total = data?.pagination.total || 0;
   const showingFrom = total === 0 ? 0 : (page - 1) * pageSize + 1;
@@ -446,6 +487,21 @@ export default function LogsPage() {
                 >
                   {isFetching && !isLiveTail ? "加载中..." : "获取"}
                 </Button>
+
+                {selectedRowKeys.length > 0 && (
+                  <Popconfirm
+                    title={`删除选中的 ${selectedRowKeys.length} 条日志？`}
+                    description="删除后不可恢复"
+                    okText="删除"
+                    cancelText="取消"
+                    okButtonProps={{ danger: true }}
+                    onConfirm={handleBatchDelete}
+                  >
+                    <Button danger loading={deleting}>
+                      删除选中 ({selectedRowKeys.length})
+                    </Button>
+                  </Popconfirm>
+                )}
               </div>
             </div>
 
@@ -498,11 +554,19 @@ export default function LogsPage() {
             loading={isLoading}
             size="small"
             scroll={{ x: 1400 }}
+            rowSelection={{
+              selectedRowKeys,
+              onChange: (keys) => setSelectedRowKeys(keys),
+            }}
             pagination={false}
             className="ant-table-compact"
             locale={{ emptyText: <Empty description="暂无日志记录" /> }}
             onRow={(record) => ({
-              onClick: () => router.push(`/logs/detail?id=${record.id}`),
+              onClick: (e) => {
+                // 点击复选框列（勾选框及周边空白）不跳转详情，避免点歪误触
+                if ((e.target as HTMLElement).closest('.ant-table-selection-column')) return;
+                router.push(`/logs/detail?id=${record.id}`);
+              },
               className: "cursor-pointer hover:bg-gray-50",
             })}
           />

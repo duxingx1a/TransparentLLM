@@ -329,18 +329,18 @@ pub async fn update_daily_stats(
 /// 启动日志清理任务
 ///
 /// 滑动窗口策略：
-/// - 超过 7 天：清空 messages 和 response（保留指标用于统计）
-/// - 超过 BODY_RETENTION_DAYS（默认 30）：删除整条记录
+/// - 超过 retention_days 天的记录删除整条（默认 30，可配置）
+/// - 删除前重建 daily_stats，保留历史统计
 /// 任务启动时立即执行一次，之后每 6 小时执行一次。
 pub fn start_cleanup_task(db: PgPool, retention_days: i64) {
     tokio::spawn(async move {
         // 启动时立即执行一次
-        sliding_window_cleanup(&db).await;
+        sliding_window_cleanup(&db, retention_days).await;
 
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(6 * 3600));
         loop {
             interval.tick().await;
-            sliding_window_cleanup(&db).await;
+            sliding_window_cleanup(&db, retention_days).await;
         }
     });
 }
@@ -349,11 +349,17 @@ pub fn start_cleanup_task(db: PgPool, retention_days: i64) {
 ///
 /// 步骤（按顺序）：
 /// 1. 重建 daily_stats（在删数据前保留统计）
-/// 2. 超过 7 天的记录清空 messages/response
-/// 3. 超过 BODY_RETENTION_DAYS 天（默认 30）的记录删除
-/// 4. VACUUM 回收空间
-const BODY_RETENTION_DAYS: i64 = 30;
-async fn sliding_window_cleanup(db: &PgPool) {
+/// 2. 超过保留天数（settings 表配置优先，否则默认）的记录删除整条
+async fn sliding_window_cleanup(db: &PgPool, default_retention_days: i64) {
+    // 保留天数以数据库 settings 表为准（设置页可改，立即生效），未配置时用默认值
+    let retention_days: i64 = sqlx::query_scalar(
+        "SELECT value::bigint FROM settings WHERE key = 'log_retention_days'",
+    )
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or(default_retention_days);
 
     // ── 1. 重建 daily_stats（备份前确保统计完整）──
     tracing::info!("开始重建 daily_stats...");
@@ -400,32 +406,11 @@ async fn sliding_window_cleanup(db: &PgPool) {
         Err(e) => tracing::error!("daily_stats 重建失败: {}", e),
     }
 
-    // ── 2. 超过 7 天的记录：清空 messages 和 response（保留指标）──
-    let clear_body = sqlx::query(
-        r#"
-        UPDATE request_logs
-        SET messages = NULL, response = NULL
-        WHERE created_at < CURRENT_DATE - INTERVAL '7 days'
-          AND (messages IS NOT NULL OR response IS NOT NULL)
-        "#,
-    )
-    .execute(db)
-    .await;
-
-    match clear_body {
-        Ok(r) => {
-            if r.rows_affected() > 0 {
-                tracing::info!("已清空 {} 条记录的 messages/response（>7天）", r.rows_affected());
-            }
-        }
-        Err(e) => tracing::error!("清空 messages/response 失败: {}", e),
-    }
-
-    // ── 3. 超过 BODY_RETENTION_DAYS 天的记录删除 ──
+    // ── 2. 超过 retention_days 天的记录删除整条 ──
     let delete_old = sqlx::query(
         "DELETE FROM request_logs WHERE created_at < CURRENT_DATE - $1::interval",
     )
-    .bind(format!("{} days", BODY_RETENTION_DAYS))
+    .bind(format!("{} days", retention_days))
     .execute(db)
     .await;
 
@@ -435,7 +420,7 @@ async fn sliding_window_cleanup(db: &PgPool) {
                 tracing::info!(
                     "已删除 {} 条过期记录（>{}天）",
                     r.rows_affected(),
-                    BODY_RETENTION_DAYS
+                    retention_days
                 );
             }
         }

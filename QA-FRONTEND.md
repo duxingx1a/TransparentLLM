@@ -27,7 +27,7 @@
 
 ### 模型管理
 - 价格单位：¥/1M tokens（前端显示转换）
-- `api_key` 不在 GET 响应中返回，只有 `has_key: true/false`
+- `api_key` 明文返回（小眼睛可查看），`has_key: true/false` 表示是否有 Key
 - 模型价格：`input_price`（输入） / `output_price`（输出）
 
 ### 仪表盘

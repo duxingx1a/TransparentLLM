@@ -84,7 +84,8 @@ pub fn management_routes() -> Router<Arc<AppState>> {
         .route("/api/playground/endpoints", get(playground_endpoints))
         // 日志
         .route("/api/logs", get(list_logs))
-        .route("/api/logs/:id", get(get_log_detail))
+        .route("/api/logs/batch-delete", post(batch_delete_logs))
+        .route("/api/logs/:id", get(get_log_detail).delete(delete_log))
         // 统计
         .route("/api/stats/overview", get(get_stats_overview))
         .route("/api/stats/daily", get(get_stats_daily))
@@ -110,25 +111,13 @@ async fn list_models(
     }
     match crate::models::list_models(&state.db).await {
         Ok(mut models) => {
-            // 解密每个模型的 api_key 供前端展示
+            // 如果 api_key 是占位符，替换为提供商的真实 key
             for model in &mut models {
-                if !model.encrypted_api_key.is_empty() {
-                    model.decrypted_api_key = crate::models::decrypt_api_key(
-                        &model.encrypted_api_key,
-                        &state.config.encryption_key,
-                    )
-                    .unwrap_or_default();
-                }
-                // 如果 api_key 是占位符，替换为提供商的真实 key
-                if model.decrypted_api_key == "auto-from-provider" {
+                if model.api_key == "auto-from-provider" {
                     if let Ok(Some(prov)) = crate::models::get_provider_by_name(
                         &state.db, &model.provider,
                     ).await {
-                        model.decrypted_api_key = crate::models::decrypt_api_key(
-                            &prov.encrypted_api_key,
-                            &state.config.encryption_key,
-                        )
-                        .unwrap_or_default();
+                        model.api_key = prov.api_key.clone();
                     }
                 }
             }
@@ -151,14 +140,7 @@ async fn get_model(
         return resp;
     }
     match crate::models::get_model(&state.db, &id).await {
-        Ok(Some(mut model)) => {
-            if !model.encrypted_api_key.is_empty() {
-                model.decrypted_api_key = crate::models::decrypt_api_key(
-                    &model.encrypted_api_key,
-                    &state.config.encryption_key,
-                )
-                .unwrap_or_default();
-            }
+        Ok(Some(model)) => {
             Json(model).into_response()
         }
         Ok(None) => (
@@ -182,7 +164,7 @@ async fn create_model(
     if let Err(resp) = crate::auth::middleware::check_auth(&state, &headers) {
         return resp;
     }
-    match crate::models::create_model(&state.db, req, &state.config.encryption_key).await {
+    match crate::models::create_model(&state.db, req).await {
         Ok(model) => {
             // 重建模型缓存
             let new_cache = crate::models::build_model_cache(&state.db).await;
@@ -214,7 +196,7 @@ async fn update_model(
     }
     // 检查是否有价格字段变更
     let price_changed = req.input_price.is_some() || req.output_price.is_some() || req.cache_price.is_some();
-    match crate::models::update_model(&state.db, &id, req, &state.config.encryption_key).await {
+    match crate::models::update_model(&state.db, &id, req).await {
         Ok(Some(model)) => {
             // 价格变更时自动重算历史日志花费
             if price_changed {
@@ -855,6 +837,178 @@ async fn get_log_detail(
             })).into_response()
 }
 
+/// 从 daily_stats 中扣减一条日志的统计（date 取 start_time 的日期部分）
+async fn decrement_daily_stats(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    date: &str,
+    model_name: &str,
+    source_tag: &str,
+    total_tokens: i64,
+    prompt_tokens: i64,
+    completion_tokens: i64,
+    cache_hit: bool,
+    cached_tokens: i64,
+    spend: f64,
+    is_error: bool,
+) -> anyhow::Result<()> {
+    let cache_hit_int = if cache_hit { 1 } else { 0 };
+    let failed_int = if is_error { 1 } else { 0 };
+    sqlx::query(
+        r#"
+        UPDATE daily_stats SET
+            total_requests    = GREATEST(0, total_requests - 1),
+            total_tokens     = GREATEST(0, total_tokens - $4),
+            prompt_tokens    = GREATEST(0, prompt_tokens - $5),
+            completion_tokens= GREATEST(0, completion_tokens - $6),
+            cache_hits      = GREATEST(0, cache_hits - $7),
+            cached_tokens   = GREATEST(0, cached_tokens - $8),
+            total_spend     = GREATEST(0, total_spend - $9),
+            failed_requests = GREATEST(0, failed_requests - $10)
+        WHERE date = $1 AND model_name = $2 AND source_tag = $3
+        "#,
+    )
+    .bind(date)
+    .bind(model_name)
+    .bind(source_tag)
+    .bind(total_tokens)
+    .bind(prompt_tokens)
+    .bind(completion_tokens)
+    .bind(cache_hit_int)
+    .bind(cached_tokens)
+    .bind(spend)
+    .bind(failed_int)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// 删除日志时同步扣减 daily_stats 的统计字段
+async fn delete_logs_with_stats(
+    state: &Arc<AppState>,
+    ids: &[String],
+) -> anyhow::Result<u64> {
+    let mut tx = state.db.begin().await?;
+
+    // 1. 查出待删日志的统计字段（用于扣减 daily_stats）
+    #[derive(Debug, sqlx::FromRow)]
+    struct LogStatRow {
+        start_time: String,
+        model_name: String,
+        source_tag: String,
+        total_tokens: i64,
+        prompt_tokens: i64,
+        completion_tokens: i64,
+        cache_hit: i32,
+        cached_tokens: i64,
+        spend: f64,
+        status: String,
+    }
+    let rows: Vec<LogStatRow> = sqlx::query_as(
+        "SELECT start_time, model_name, source_tag, total_tokens, prompt_tokens, \
+         completion_tokens, cache_hit, cached_tokens, spend, status \
+         FROM request_logs WHERE id = ANY($1)",
+    )
+    .bind(ids)
+    .fetch_all(&mut *tx)
+    .await?;
+
+    // 2. 删除日志
+    let del = sqlx::query("DELETE FROM request_logs WHERE id = ANY($1)")
+        .bind(ids)
+        .execute(&mut *tx)
+        .await?;
+
+    // 3. 逐条扣减 daily_stats
+    for r in &rows {
+        let date = r.start_time.split(' ').next().unwrap_or("").to_string();
+        if date.is_empty() {
+            continue;
+        }
+        decrement_daily_stats(
+            &mut tx,
+            &date,
+            &r.model_name,
+            &r.source_tag,
+            r.total_tokens,
+            r.prompt_tokens,
+            r.completion_tokens,
+            r.cache_hit != 0,
+            r.cached_tokens,
+            r.spend,
+            r.status != "success",
+        )
+        .await?;
+    }
+
+    tx.commit().await?;
+    Ok(del.rows_affected())
+}
+
+/// DELETE /api/logs/:id — 删除单条请求日志
+async fn delete_log(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Err(resp) = crate::auth::middleware::check_auth(&state, &headers) {
+        return resp;
+    }
+    match delete_logs_with_stats(&state, &[id]).await {
+        Ok(n) if n > 0 => {
+            Json(serde_json::json!({"success": true, "deleted": n})).into_response()
+        }
+        Ok(_) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "日志不存在"})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /api/logs/batch-delete — 批量删除请求日志
+#[derive(Debug, Deserialize)]
+struct BatchDeleteLogsRequest {
+    ids: Vec<String>,
+}
+
+async fn batch_delete_logs(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<BatchDeleteLogsRequest>,
+) -> impl IntoResponse {
+    if let Err(resp) = crate::auth::middleware::check_auth(&state, &headers) {
+        return resp;
+    }
+    if body.ids.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "未选择要删除的日志"})),
+        )
+            .into_response();
+    }
+    // 限制单次删除数量，防止超长 SQL
+    let ids: Vec<String> = body.ids.into_iter().take(500).collect();
+    match delete_logs_with_stats(&state, &ids).await {
+        Ok(n) => {
+            Json(serde_json::json!({
+                "success": true,
+                "deleted": n
+            }))
+            .into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
 // ── 统计 ──
 
 #[derive(Debug, Deserialize)]
@@ -1185,8 +1339,18 @@ async fn get_settings(
     if let Err(resp) = crate::auth::middleware::check_auth(&state, &headers) {
         return resp;
     }
+    // 保留天数以数据库 settings 表为准（设置页可改，立即生效），未配置时用 config 默认
+    let db_retention: Option<i64> = sqlx::query_scalar(
+        "SELECT value::bigint FROM settings WHERE key = 'log_retention_days'",
+    )
+    .fetch_optional(&state.db)
+    .await
+    .ok()
+    .flatten();
+    let log_retention_days = db_retention.unwrap_or(state.config.log_retention_days);
+
     Json(serde_json::json!({
-        "log_retention_days": state.config.log_retention_days,
+        "log_retention_days": log_retention_days,
         "host": state.config.host,
         "port": state.config.port,
         "version": env!("CARGO_PKG_VERSION"),
@@ -1316,14 +1480,7 @@ async fn list_providers(
         Ok(rows) => {
             let providers: Vec<crate::models::ProviderConfig> = rows
                 .into_iter()
-                .map(|r| {
-                    let decrypted = crate::models::decrypt_api_key(
-                        &r.encrypted_api_key,
-                        &state.config.encryption_key,
-                    )
-                    .unwrap_or_default();
-                    r.into_config(decrypted)
-                })
+                .map(|r| r.into_config())
                 .collect();
             Json(serde_json::json!({ "providers": providers })).into_response()
         }
@@ -1344,7 +1501,7 @@ async fn create_provider(
     if let Err(resp) = crate::auth::middleware::check_auth(&state, &headers) {
         return resp;
     }
-    match crate::models::create_provider(&state.db, req, &state.config.encryption_key).await {
+    match crate::models::create_provider(&state.db, req).await {
         Ok(provider) => (StatusCode::CREATED, Json(provider)).into_response(),
         Err(e) => {
             let msg = e.to_string();
@@ -1369,12 +1526,7 @@ async fn get_provider(
     }
     match crate::models::get_provider(&state.db, &id).await {
         Ok(Some(row)) => {
-            let decrypted = crate::models::decrypt_api_key(
-                &row.encrypted_api_key,
-                &state.config.encryption_key,
-            )
-            .unwrap_or_default();
-            Json(row.into_config(decrypted)).into_response()
+            Json(row.into_config()).into_response()
         }
         Ok(None) => (
             StatusCode::NOT_FOUND,
@@ -1399,7 +1551,7 @@ async fn update_provider(
     if let Err(resp) = crate::auth::middleware::check_auth(&state, &headers) {
         return resp;
     }
-    match crate::models::update_provider(&state.db, &id, req, &state.config.encryption_key).await {
+    match crate::models::update_provider(&state.db, &id, req).await {
         Ok(Some(provider)) => Json(provider).into_response(),
         Ok(None) => (
             StatusCode::NOT_FOUND,
@@ -1467,20 +1619,7 @@ async fn get_provider_models(
         }
     };
 
-    // 解密 API Key
-    let api_key = match crate::models::decrypt_api_key(
-        &provider.encrypted_api_key,
-        &state.config.encryption_key,
-    ) {
-        Ok(k) => k,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": format!("解密 API Key 失败: {}", e)})),
-            )
-                .into_response();
-        }
-    };
+    let api_key = provider.api_key.clone();
 
     // 构建请求 URL：智能拼接，避免 /v1/v1/models 问题
     let api_base = provider.api_base.trim_end_matches('/');

@@ -150,8 +150,8 @@ export default function ProvidersPage() {
     },
     {
       title: "API Key",
-      dataIndex: "decrypted_api_key",
-      key: "decrypted_api_key",
+      dataIndex: "api_key",
+      key: "api_key",
       width: 380,
       render: (v: string, record: ProviderConfig) => {
         const isVisible = visibleKeys.has(record.id);

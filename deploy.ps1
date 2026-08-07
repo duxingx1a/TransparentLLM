@@ -1,25 +1,14 @@
 # TransparentLLM 一键部署脚本（WSL Docker 编译 → 镜像 → 服务器）
 # 前提：WSL2 + Docker Engine 已安装
-# 使用：.\deploy.ps1 -Key "你的32字节密钥"
-# 注意：-Key 为生产加密密钥，必须显式传入（勿使用公开默认值）
+# 使用：.\deploy.ps1
 
 param(
     [string]$Server = "ydl-server",
-    [string]$RemoteDir = "/root/ydl-projects/transparentllm",
-    [string]$Key = $env:TRANSPARENTLLM_ENCRYPTION_KEY
+    [string]$RemoteDir = "/root/ydl-projects/transparentllm"
 )
 
 $ErrorActionPreference = "Stop"
 $WslPath = "/mnt/e/projects/TransparentLLM"
-
-# 校验加密密钥：必须显式提供，防止用公开默认值或空值覆盖生产配置
-if ([string]::IsNullOrEmpty($Key)) {
-    Write-Host "错误: 未提供加密密钥。请用 -Key 参数或设置环境变量 TRANSPARENTLLM_ENCRYPTION_KEY" -ForegroundColor Red
-    exit 1
-}
-if ($Key.Length -ne 32) {
-    Write-Host "警告: 密钥长度 ${($Key.Length)} 不是 32 字节，可能无法正常工作" -ForegroundColor Yellow
-}
 
 # 启动 Docker daemon
 Write-Host "=== 0/4 启动 Docker ===" -ForegroundColor Cyan
@@ -60,7 +49,7 @@ ssh $Server "cp -r $RemoteDir/frontend/out/* /root/ydl-projects/nginx/sites/llm/
 # 4. 服务器加载镜像 + 启动
 Write-Host "`n=== 4/4 服务器启动 ===" -ForegroundColor Cyan
 
-$remoteCmd = "cd $RemoteDir; sed -i 's/change-me-to-32-byte-secret-key!!/$Key/' docker-compose.yaml; docker load -i transparentllm.tar; docker compose up -d --force-recreate transparentllm; sleep 5; docker exec nginx-proxy nginx -s reload 2>&1; echo '=== 验证 ==='; curl -so /dev/null -w '/ui/ HTTP:%{http_code}' http://127.0.0.1/ui/; echo ''; curl -so /dev/null -w '/ui/logs HTTP:%{http_code}' http://127.0.0.1/ui/logs; echo ''; curl -so /dev/null -w '/ui/dashboard HTTP:%{http_code}' http://127.0.0.1/ui/dashboard; echo ''"
+$remoteCmd = "cd $RemoteDir; docker load -i transparentllm.tar; docker compose up -d --force-recreate transparentllm; sleep 5; docker exec nginx-proxy nginx -s reload 2>&1; echo '=== 验证 ==='; curl -so /dev/null -w '/ui/ HTTP:%{http_code}' http://127.0.0.1/ui/; echo ''; curl -so /dev/null -w '/ui/logs HTTP:%{http_code}' http://127.0.0.1/ui/logs; echo ''; curl -so /dev/null -w '/ui/dashboard HTTP:%{http_code}' http://127.0.0.1/ui/dashboard; echo ''"
 
 ssh $Server $remoteCmd
 

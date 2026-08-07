@@ -15,7 +15,7 @@ export interface ModelConfig {
   created_at: string;
   updated_at: string;
   has_key: boolean;
-  decrypted_api_key: string;
+  api_key: string;
 }
 
 /** 创建/更新模型请求 */
@@ -37,7 +37,7 @@ export interface ProviderConfig {
   id: string;
   name: string;
   api_base: string;
-  decrypted_api_key: string;
+  api_key: string;
   created_at: string;
   updated_at: string;
 }

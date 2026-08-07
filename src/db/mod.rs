@@ -15,7 +15,7 @@ pub async fn run_migrations(db: &PgPool) -> anyhow::Result<()> {
             model_name          TEXT NOT NULL,
             provider            TEXT NOT NULL,
             api_base            TEXT NOT NULL,
-            encrypted_api_key   BYTEA NOT NULL,
+            api_key             TEXT NOT NULL DEFAULT '',
             input_price         DOUBLE PRECISION NOT NULL DEFAULT 0,
             output_price        DOUBLE PRECISION NOT NULL DEFAULT 0,
             cache_price         DOUBLE PRECISION NOT NULL DEFAULT 0,
@@ -118,7 +118,7 @@ pub async fn run_migrations(db: &PgPool) -> anyhow::Result<()> {
             id                  TEXT PRIMARY KEY,
             name                TEXT NOT NULL UNIQUE,
             api_base            TEXT NOT NULL,
-            encrypted_api_key   BYTEA NOT NULL,
+            api_key             TEXT NOT NULL DEFAULT '',
             created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )

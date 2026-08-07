@@ -198,6 +198,19 @@ export const logsApi = {
 
   /** 获取日志详情 */
   detail: (id: string) => request<RequestLogDetail>(`/api/logs/${id}`),
+
+  /** 删除单条日志 */
+  delete: (id: string) =>
+    request<{ success: boolean; deleted: number }>(`/api/logs/${id}`, {
+      method: "DELETE",
+    }),
+
+  /** 批量删除日志 */
+  batchDelete: (ids: string[]) =>
+    request<{ success: boolean; deleted: number }>("/api/logs/batch-delete", {
+      method: "POST",
+      body: JSON.stringify({ ids }),
+    }),
 };
 
 // ========== 设置 API ==========

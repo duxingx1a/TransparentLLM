@@ -152,7 +152,7 @@ export default function ModelsPage() {
       // 自动填充 api_base 和 api_key（从提供商获取）
       form.setFieldsValue({
         api_base: matched.api_base,
-        api_key: matched.decrypted_api_key,
+        api_key: matched.api_key,
       });
       // 拉取模型列表
       handleFetchProviderModels(value);
@@ -247,7 +247,7 @@ export default function ModelsPage() {
     { title: "类型", dataIndex: "model_type", key: "model_type", width: 100, sorter: (a: ModelConfig, b: ModelConfig) => a.model_type.localeCompare(b.model_type), render: (v: string) => <Tag color={modelTypeColors[v] || "default"}>{v}</Tag> },
     { title: "API 地址", dataIndex: "api_base", key: "api_base", ellipsis: true, width: 220, sorter: (a: ModelConfig, b: ModelConfig) => a.api_base.localeCompare(b.api_base) },
     {
-      title: "API Key", dataIndex: "decrypted_api_key", key: "decrypted_api_key", width: 160, render: (v: string, record: ModelConfig) => {
+      title: "API Key", dataIndex: "api_key", key: "api_key", width: 160, render: (v: string, record: ModelConfig) => {
         const vis = visibleKeys.has(record.id);
         return (<Space><code style={{ maxWidth: vis ? "none" : 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: vis ? "normal" : "nowrap", display: "inline-block", wordBreak: "break-all" }}>{vis ? v : v ? "••••••••" : "-"}</code>{v && <Button type="text" size="small" icon={vis ? <EyeInvisibleOutlined /> : <EyeOutlined />} onClick={() => toggleKeyVisible(record.id)} />}</Space>);
       }

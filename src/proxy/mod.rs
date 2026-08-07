@@ -12,7 +12,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 
 use crate::logging::{DailyStatsUpdate, RequestLogEntry};
-use crate::models::{ModelConfigFull, decrypt_api_key};
+use crate::models::ModelConfigFull;
 use crate::source_tag::{parse_source_tag, detect_source_from_body};
 use crate::AppState;
 
@@ -236,44 +236,12 @@ pub async fn proxy_request(
         }
     };
 
-    let mut api_key = decrypt_api_key(&model_config.encrypted_api_key, &state.config.encryption_key)
-        .map_err(|e| {
-            // 记录错误日志
-            let err_source_tag = match detect_source_from_body(&body) {
-                Some(tag) => tag.to_string(),
-                None => parse_source_tag(
-                    headers.get("user-agent").and_then(|v| v.to_str().ok()).unwrap_or(""),
-                    headers.get("x-source").and_then(|v| v.to_str().ok()).unwrap_or(""),
-                ).to_string(),
-            };
-            let log_entry = RequestLogEntry {
-                id: uuid::Uuid::new_v4().to_string(),
-                model_name: model_name.clone(),
-                provider: model_config.provider.clone(),
-                api_base: model_config.api_base.clone(),
-                source_tag: err_source_tag,
-                start_time: start_time.clone(),
-                end_time: chrono::Utc::now().to_rfc3339(),
-                completion_start_time: None,
-                duration_ms: start.elapsed().as_millis() as i64,
-                total_tokens: 0, prompt_tokens: 0, completion_tokens: 0,
-                cache_hit: false, cache_key: None, cached_tokens: 0,
-                spend: 0.0,
-                status: "error".into(),
-                messages: extract_request_json(&body),
-                response: None,
-                error_msg: Some(format!("Key 解密失败: {}", e)),
-                tokens_per_second: 0.0,
-            };
-            state.logger.write_log(log_entry);
-            ProxyError::UpstreamError(format!("Key 解密失败: {}", e), None)
-        })?;
+    let mut api_key = model_config.api_key.clone();
 
     // 如果 api_key 是占位符，从提供商表获取真实 key
     if api_key == "auto-from-provider" || api_key.is_empty() {
         if let Ok(Some(prov_row)) = crate::models::get_provider_by_name(&state.db, &model_config.provider).await {
-            api_key = decrypt_api_key(&prov_row.encrypted_api_key, &state.config.encryption_key)
-                .unwrap_or_default();
+            api_key = prov_row.api_key.clone();
         }
     }
 

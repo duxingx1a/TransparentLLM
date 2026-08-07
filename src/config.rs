@@ -13,8 +13,6 @@ pub struct AppConfig {
     pub database_url: String,
     /// 主密钥（SHA-256 哈希存储）
     pub master_key_hash: Option<String>,
-    /// 加密密钥（AES-256-GCM，用于加密上游 API Key）
-    pub encryption_key: Vec<u8>,
     /// 日志保留天数，默认 30
     pub log_retention_days: i64,
 }
@@ -23,23 +21,6 @@ impl AppConfig {
     /// 从环境变量加载配置
     pub fn from_env() -> anyhow::Result<Self> {
         let master_key = std::env::var("TRANSPARENTLLM_MASTER_KEY").ok();
-
-        // 加密密钥：32 字节用于 AES-256
-        let encryption_key = match std::env::var("TRANSPARENTLLM_ENCRYPTION_KEY") {
-            Ok(k) => {
-                let key = k.as_bytes().to_vec();
-                anyhow::ensure!(key.len() == 32, "TRANSPARENTLLM_ENCRYPTION_KEY 必须为 32 字节");
-                key
-            }
-            Err(_) => {
-                // 未设置则生成随机密钥并警告
-                use rand::Rng;
-                let key: Vec<u8> = rand::thread_rng().gen::<[u8; 32]>().to_vec();
-                tracing::warn!("未设置 TRANSPARENTLLM_ENCRYPTION_KEY，已生成临时密钥（重启后已加密的 Key 将无法解密）");
-                tracing::warn!("请设置环境变量 TRANSPARENTLLM_ENCRYPTION_KEY=<32字节随机字符串>");
-                key
-            }
-        };
 
         Ok(Self {
             host: std::env::var("TRANSPARENTLLM_HOST").unwrap_or_else(|_| "127.0.0.1".into()),
@@ -53,11 +34,10 @@ impl AppConfig {
                 use sha2::{Digest, Sha256};
                 hex::encode(Sha256::digest(k.as_bytes()))
             }),
-            encryption_key,
             log_retention_days: std::env::var("TRANSPARENTLLM_LOG_RETENTION_DAYS")
                 .ok()
                 .and_then(|d| d.parse().ok())
-                .unwrap_or(30),
+                .unwrap_or(7),
         })
     }
 }

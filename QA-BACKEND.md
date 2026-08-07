@@ -10,14 +10,14 @@
 - ✅ 代理转发已通（Qwen3.6-27B → do.top）
 - ✅ 仪表盘统计有细分数据（prompt/completion tokens）
 - ✅ PUT/DELETE 路由已修复（`:id` 语法）
-- ⚠️ 每次启动需设 `TRANSPARENTLLM_ENCRYPTION_KEY`
+- ⚠️ 数据库为 PostgreSQL，需确保连接可用
 
 ---
 
 ## 启动命令
 
 ```powershell
-$env:TRANSPARENTLLM_ENCRYPTION_KEY="12345678901234567890123456789012"
+$env:TRANSPARENTLLM_DATABASE_URL="postgres://ydl@localhost:5432/transparentllm"
 cargo run
 ```
 
