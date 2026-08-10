@@ -99,7 +99,8 @@ where
                     }
                 }
                 Err(e) => {
-                    error_msg = Some(format!("SSE 流读取错误: {}", e));
+                    let raw_err = format!("SSE 流读取错误: {}", e);
+                    error_msg = Some(crate::proxy::errors::classify(&raw_err).full());
                     break;
                 }
             }

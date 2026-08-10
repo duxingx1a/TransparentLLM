@@ -321,7 +321,7 @@ async fn do_recalculate_spend(db: &sqlx::PgPool) {
     .ok();
 
     // 3. 重新计算每条 request_logs 的 spend
-    let logs = sqlx::query_as::<_, (String, String, String, i64, i64, i64, i64, i32, String, String, String, String, String, f64)>(
+    let logs = sqlx::query_as::<_, (String, String, String, i64, i64, i64, i64, i32, String, String, String, Option<String>, String, f64)>(
         "SELECT id, model_name, provider, prompt_tokens, completion_tokens, cached_tokens, total_tokens, cache_hit, source_tag, start_time, end_time, completion_start_time, status, spend FROM request_logs"
     )
     .fetch_all(db)
@@ -333,6 +333,10 @@ async fn do_recalculate_spend(db: &sqlx::PgPool) {
     let mut stats_rows: std::collections::HashMap<(String, String, String), (i64, i64, i64, i64, i64, i64, f64)> = std::collections::HashMap::new();
 
     for (id, model_name, _provider, prompt_tokens, completion_tokens, cached_tokens, _total_tokens, cache_hit, source_tag, start_time, _end_time, _completion_start_time, _status, _old_spend) in &logs {
+        // test 来源不计费、不计入 daily_stats（只在日志中显示）
+        if source_tag == "test" {
+            continue;
+        }
         let new_spend = if let Some((input_price, output_price, cache_price)) = price_map.get(model_name) {
             let uncached = (*prompt_tokens as f64) - (*cached_tokens as f64);
             let uncached = uncached.max(0.0);
@@ -357,7 +361,7 @@ async fn do_recalculate_spend(db: &sqlx::PgPool) {
         entry.6 += new_spend;                  // total_spend
     }
 
-    // 4. 在一个事务中原子更新：先改 spend，再原子替换 daily_stats
+    // 4. 在一个事务中原子更新：先改 spend，再合并 daily_stats（保留历史，不删除）
     let mut tx = db.begin().await.unwrap();
 
     // 逐条更新 spend（分批避免事务太大）
@@ -372,18 +376,20 @@ async fn do_recalculate_spend(db: &sqlx::PgPool) {
         }
     }
 
-    // 创建临时表写入新数据
-    sqlx::query(
-        "CREATE TEMP TABLE daily_stats_new (LIKE daily_stats INCLUDING DEFAULTS) ON COMMIT DROP"
-    )
-    .execute(&mut *tx)
-    .await
-    .ok();
-
+    // 合并 daily_stats：用 UPSERT 更新现有统计，保留历史（不再 DELETE 整表）
     for ((date, model_name, source_tag), (total_requests, total_tokens, prompt_tokens, completion_tokens, cache_hits, cached_tokens, total_spend)) in &stats_rows {
         sqlx::query(
-            "INSERT INTO daily_stats_new (date, model_name, source_tag, total_requests, total_tokens, prompt_tokens, completion_tokens, cache_hits, cached_tokens, total_spend, failed_requests) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 0)"
+            "INSERT INTO daily_stats (date, model_name, source_tag, total_requests, total_tokens, prompt_tokens, completion_tokens, cache_hits, cached_tokens, total_spend, failed_requests) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 0) \
+             ON CONFLICT (date, model_name, source_tag) DO UPDATE SET \
+                total_requests    = EXCLUDED.total_requests, \
+                total_tokens     = EXCLUDED.total_tokens, \
+                prompt_tokens    = EXCLUDED.prompt_tokens, \
+                completion_tokens= EXCLUDED.completion_tokens, \
+                cache_hits      = EXCLUDED.cache_hits, \
+                cached_tokens   = EXCLUDED.cached_tokens, \
+                total_spend     = EXCLUDED.total_spend, \
+                failed_requests = EXCLUDED.failed_requests"
         )
         .bind(date)
         .bind(model_name)
@@ -399,10 +405,6 @@ async fn do_recalculate_spend(db: &sqlx::PgPool) {
         .await
         .ok();
     }
-
-    // 原子替换：删旧表，将临时表重命名为正式表名
-    sqlx::query("DELETE FROM daily_stats").execute(&mut *tx).await.ok();
-    sqlx::query("INSERT INTO daily_stats SELECT * FROM daily_stats_new").execute(&mut *tx).await.ok();
 
     tx.commit().await.unwrap();
 }
@@ -613,6 +615,7 @@ struct LogQueryParams {
     #[serde(default = "default_page_size")]
     page_size: u32,
     model_name: Option<String>,
+    provider: Option<String>,
     source_tag: Option<String>,
     status: Option<String>,
     start_date: Option<String>,
@@ -661,6 +664,9 @@ async fn list_logs(
 
     if let Some(ref m) = params.model_name {
         conditions.push(format!("model_name = '{}'", m.replace('\'', "''")));
+    }
+    if let Some(ref p) = params.provider {
+        conditions.push(format!("provider = '{}'", p.replace('\'', "''")));
     }
     if let Some(ref s) = params.source_tag {
         conditions.push(format!("source_tag = '{}'", s.replace('\'', "''")));
@@ -1302,7 +1308,7 @@ async fn get_source_tags(
         return resp;
     }
     let tags: Vec<SourceTagRow> = sqlx::query_as(
-        "SELECT source_tag, COUNT(*) as cnt, MAX(created_at) as last_seen \
+        "SELECT source_tag, COUNT(*) as cnt, MAX(created_at)::text as last_seen \
          FROM request_logs GROUP BY source_tag ORDER BY cnt DESC"
     )
     .fetch_all(&state.db)

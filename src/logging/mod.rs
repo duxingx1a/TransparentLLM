@@ -117,7 +117,14 @@ impl BatchLogger {
     }
 
     /// 异步更新每日统计（实际入队，不阻塞）
+    ///
+    /// 来源为 `test` 的请求不计入 daily_stats（不计费、不计请求次数、不计 token 用量），
+    /// 但仍会通过 write_log 写入 request_logs 日志。
     pub fn update_stats(&self, update: DailyStatsUpdate) {
+        // test 来源不计入统计
+        if update.source_tag == "test" {
+            return;
+        }
         let _ = self.tx.send(LogMessage::DailyStats(update));
     }
 
@@ -382,6 +389,7 @@ async fn sliding_window_cleanup(db: &PgPool, default_retention_days: i64) {
             SUM(CASE WHEN status != 'success' THEN 1 ELSE 0 END)::bigint as failed_requests
         FROM request_logs
         WHERE start_time >= CURRENT_DATE - INTERVAL '1 day'
+          AND source_tag != 'test'
         GROUP BY DATE(start_time), model_name, source_tag
         ON CONFLICT(date, model_name, source_tag) DO UPDATE SET
             total_requests        = EXCLUDED.total_requests,
@@ -470,6 +478,7 @@ pub async fn sync_daily_stats_from_logs(db: &PgPool) {
             SUM(spend) as total_spend,
             SUM(CASE WHEN status != 'success' THEN 1 ELSE 0 END)::bigint as failed_requests
         FROM request_logs
+        WHERE source_tag != 'test'
         GROUP BY DATE(start_time), model_name, source_tag
         ON CONFLICT(date, model_name, source_tag) DO UPDATE SET
             total_requests = EXCLUDED.total_requests,

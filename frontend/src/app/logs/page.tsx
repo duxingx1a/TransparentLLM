@@ -2,10 +2,10 @@
 
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
-import { Table, Switch, Select, DatePicker, Button, Empty, ConfigProvider, Tooltip, Popconfirm, message } from "antd";
+import { Table, Switch, Select, DatePicker, Button, Empty, ConfigProvider, Tooltip, Popconfirm, message, Dropdown } from "antd";
 import zhCN from "antd/locale/zh_CN";
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
-import { logsApi, modelsApi } from "@/lib/api";
+import { logsApi, modelsApi, providersApi, sourceTagsApi } from "@/lib/api";
 import { ModelIcon, ProviderIcon, SourceIcon } from "@/lib/icons";
 import type { RequestLogItem, LogQueryParams } from "@/types";
 import dayjs from "dayjs";
@@ -40,6 +40,7 @@ export default function LogsPage() {
   const [page, setPage] = useState(1);
   const [pageSize] = useState(20);
   const [modelFilter, setModelFilter] = useState("");
+  const [providerFilter, setProviderFilter] = useState("");
   const [sourceFilter, setSourceFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [timeRange, setTimeRange] = useState("24h");
@@ -52,12 +53,33 @@ export default function LogsPage() {
   });
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
   const [deleting, setDeleting] = useState(false);
+  const [jumpPage, setJumpPage] = useState("");
 
   // 获取模型列表（供筛选下拉用）
   const { data: modelsData } = useQuery({
     queryKey: ["models-for-filter"],
     queryFn: () => modelsApi.list(),
   });
+
+  // 动态加载实际存在的来源标签（不写死）
+  const { data: sourceTagsData } = useQuery({
+    queryKey: ["source-tags-for-filter"],
+    queryFn: () => sourceTagsApi.list(),
+  });
+  const sourceOptions = useMemo(() => {
+    if (!sourceTagsData?.tags) return [];
+    return sourceTagsData.tags.map((t: any) => ({ label: t.tag, value: t.tag }));
+  }, [sourceTagsData]);
+
+  // 动态加载供应商列表
+  const { data: providersData } = useQuery({
+    queryKey: ["providers-for-filter"],
+    queryFn: () => providersApi.list(),
+  });
+  const providerOptions = useMemo(() => {
+    if (!providersData?.providers) return [];
+    return providersData.providers.map((p: any) => ({ label: p.name, value: p.name }));
+  }, [providersData]);
   const modelOptions = useMemo(() => {
     if (!modelsData?.models) return [];
     return modelsData.models.map((m: any) => ({ label: m.model_name, value: m.model_name }));
@@ -79,6 +101,7 @@ export default function LogsPage() {
         const s = JSON.parse(stored);
         if (typeof s.page === "number") setPage(s.page);
         if (typeof s.modelFilter === "string") setModelFilter(s.modelFilter);
+        if (typeof s.providerFilter === "string") setProviderFilter(s.providerFilter);
         if (typeof s.sourceFilter === "string") setSourceFilter(s.sourceFilter);
         if (typeof s.statusFilter === "string") setStatusFilter(s.statusFilter);
         if (typeof s.timeRange === "string") setTimeRange(s.timeRange);
@@ -90,9 +113,9 @@ export default function LogsPage() {
   }, []);
   useEffect(() => {
     sessionStorage.setItem("logs-page-state", JSON.stringify({
-      page, modelFilter, sourceFilter, statusFilter, timeRange, customRange, sortConfig, showFilters,
+      page, modelFilter, providerFilter, sourceFilter, statusFilter, timeRange, customRange, sortConfig, showFilters,
     }));
-  }, [page, modelFilter, sourceFilter, statusFilter, timeRange, customRange, sortConfig, showFilters]);
+  }, [page, modelFilter, providerFilter, sourceFilter, statusFilter, timeRange, customRange, sortConfig, showFilters]);
 
   const dateRange = useMemo((): [string, string] | null => {
     if (customRange) return customRange;
@@ -108,6 +131,7 @@ export default function LogsPage() {
     page,
     size: pageSize,
     ...(modelFilter && { model_name: modelFilter }),
+    ...(providerFilter && { provider: providerFilter }),
     ...(sourceFilter && { source_tag: sourceFilter }),
     ...(statusFilter && { status: statusFilter }),
     ...(dateRange && { start_date: dateRange[0], end_date: dateRange[1] }),
@@ -166,6 +190,7 @@ export default function LogsPage() {
 
   const resetFilters = useCallback(() => {
     setModelFilter("");
+    setProviderFilter("");
     setSourceFilter("");
     setStatusFilter("");
     setTimeRange("24h");
@@ -173,7 +198,7 @@ export default function LogsPage() {
     setPage(1);
   }, []);
 
-  const hasActiveFilters = modelFilter || sourceFilter || statusFilter || customRange;
+  const hasActiveFilters = modelFilter || providerFilter || sourceFilter || statusFilter || customRange;
 
   // 批量删除选中的日志
   const handleBatchDelete = useCallback(async () => {
@@ -368,9 +393,9 @@ export default function LogsPage() {
         <Button onClick={resetFilters}>重置过滤</Button>
       </div>
 
-      {/* ── 筛选面板（LiteLLM grid-cols-4 样式） ── */}
+      {/* ── 筛选面板（一行紧凑排列） ── */}
       {showFilters && (
-        <div className="grid grid-cols-4 gap-x-4 gap-y-3 mb-6 p-4 bg-gray-50 rounded-lg border border-gray-200">
+        <div className="grid grid-cols-5 gap-x-3 gap-y-3 mb-6 p-4 bg-gray-50 rounded-lg border border-gray-200">
           <div className="flex flex-col gap-2">
             <label className="text-sm text-gray-600">模型名称</label>
             <Select
@@ -387,19 +412,33 @@ export default function LogsPage() {
             />
           </div>
           <div className="flex flex-col gap-2">
+            <label className="text-sm text-gray-600">供应商</label>
+            <Select
+              showSearch
+              className="w-full"
+              placeholder="选择供应商..."
+              value={providerFilter || undefined}
+              onChange={(v) => { setProviderFilter(v || ""); setPage(1); }}
+              allowClear
+              options={providerOptions}
+              filterOption={(input, option) =>
+                (option?.label ?? "").toLowerCase().includes(input.toLowerCase())
+              }
+            />
+          </div>
+          <div className="flex flex-col gap-2">
             <label className="text-sm text-gray-600">来源标签</label>
             <Select
+              showSearch
               className="w-full"
               placeholder="选择来源..."
               value={sourceFilter || undefined}
               onChange={(v) => { setSourceFilter(v || ""); setPage(1); }}
               allowClear
-              options={[
-                { label: "copilot", value: "copilot" },
-                { label: "curl", value: "curl" },
-                { label: "node", value: "node" },
-                { label: "unknown", value: "unknown" },
-              ]}
+              options={sourceOptions}
+              filterOption={(input, option) =>
+                (option?.label ?? "").toLowerCase().includes(input.toLowerCase())
+              }
             />
           </div>
           <div className="flex flex-col gap-2">
@@ -527,6 +566,78 @@ export default function LogsPage() {
                 >
                   下一页
                 </button>
+                <Dropdown
+                  trigger={["click"]}
+                  menu={{
+                    items: [
+                      {
+                        key: "first",
+                        label: (
+                          <button
+                            onClick={() => setPage(1)}
+                            disabled={page <= 1}
+                            className="w-full text-left text-sm disabled:opacity-50"
+                          >
+                            首页
+                          </button>
+                        ),
+                      },
+                      {
+                        key: "last",
+                        label: (
+                          <button
+                            onClick={() => setPage(totalPages || 1)}
+                            disabled={page >= totalPages}
+                            className="w-full text-left text-sm disabled:opacity-50"
+                          >
+                            最后一页
+                          </button>
+                        ),
+                      },
+                      {
+                        key: "jump",
+                        label: (
+                          <div className="flex items-center gap-1 py-1">
+                            <input
+                              type="number"
+                              min={1}
+                              max={totalPages || 1}
+                              value={jumpPage}
+                              onChange={(e) => setJumpPage(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") {
+                                  const n = parseInt(jumpPage, 10);
+                                  if (!isNaN(n) && n >= 1) {
+                                    setPage(Math.min(n, totalPages || 1));
+                                    setJumpPage("");
+                                  }
+                                }
+                              }}
+                              placeholder="页数"
+                              className="w-16 px-2 py-1 text-sm border rounded-md"
+                            />
+                            <button
+                              onClick={() => {
+                                const n = parseInt(jumpPage, 10);
+                                if (!isNaN(n) && n >= 1) {
+                                  setPage(Math.min(n, totalPages || 1));
+                                  setJumpPage("");
+                                }
+                              }}
+                              className="px-2 py-1 text-sm border rounded-md hover:bg-gray-50"
+                            >
+                              跳转
+                            </button>
+                          </div>
+                        ),
+                      },
+                    ],
+                  }}
+                >
+                  <button className="px-5 py-1.5 text-sm border rounded-md hover:bg-gray-50 whitespace-nowrap">
+                    更多
+                  </button>
+                </Dropdown>
               </div>
             </div>
           </div>

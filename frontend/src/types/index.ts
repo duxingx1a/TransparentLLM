@@ -100,6 +100,7 @@ export interface LogQueryParams {
   page?: number;
   size?: number;
   model_name?: string;
+  provider?: string;
   source_tag?: string;
   status?: string;
   start_date?: string;

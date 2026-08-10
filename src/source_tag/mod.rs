@@ -4,32 +4,27 @@
 
 /// 解析请求来源标签
 ///
-/// 优先读 `X-Source` 请求头（前端可控），fallback 到 User-Agent 自动识别
-pub fn parse_source_tag(user_agent: &str, x_source: &str) -> &'static str {
-    // 优先使用 X-Source 头（前端显式指定的来源）
-    if !x_source.is_empty() {
-        let src = x_source.trim().to_lowercase();
-        if src == "transparentllm" { return "TransparentLLM"; }
-        if src == "copilot" { return "copilot"; }
-        if src == "hermes" { return "hermes"; }
-        if src == "codex" { return "codex"; }
-        if src == "python" { return "python"; }
-        if src == "curl" { return "curl"; }
-        if src == "go" { return "go"; }
-        if src == "node" { return "node"; }
+/// 优先读 `X-Source` 请求头（前端可控），有值则原样透传（不做白名单枚举，支持任意新来源）；
+/// 仅当 `X-Source` 为空时，才 fallback 到 User-Agent 自动识别；
+/// 两者都识别不出时返回 `"unknown"`。
+pub fn parse_source_tag(user_agent: &str, x_source: &str) -> String {
+    // 优先使用 X-Source 头（前端显式指定的来源），原样返回，不做枚举
+    let src = x_source.trim();
+    if !src.is_empty() {
+        return src.to_string();
     }
 
     let ua_lower = user_agent.to_lowercase();
 
-    if ua_lower.contains("copilot") { return "copilot"; }
-    if ua_lower.contains("hermes") { return "hermes"; }
-    if ua_lower.contains("codex") { return "codex"; }
-    if ua_lower.contains("python-requests") || ua_lower.contains("python/") { return "python"; }
-    if ua_lower.starts_with("curl/") { return "curl"; }
-    if ua_lower.contains("go-http-client") { return "go"; }
-    if ua_lower.contains("node-fetch") || ua_lower.contains("node.js") { return "node"; }
+    if ua_lower.contains("copilot") { return "copilot".to_string(); }
+    if ua_lower.contains("hermes") { return "hermes".to_string(); }
+    if ua_lower.contains("codex") { return "codex".to_string(); }
+    if ua_lower.contains("python-requests") || ua_lower.contains("python/") { return "python".to_string(); }
+    if ua_lower.starts_with("curl/") { return "curl".to_string(); }
+    if ua_lower.contains("go-http-client") { return "go".to_string(); }
+    if ua_lower.contains("node-fetch") || ua_lower.contains("node.js") { return "node".to_string(); }
 
-    "unknown"
+    "unknown".to_string()
 }
 
 /// 从请求体 JSON 中检测来源标签
@@ -85,6 +80,15 @@ mod tests {
         // 现在应该返回 "hermes"
         assert_eq!(parse_source_tag("Mozilla/5.0", "hermes"), "hermes");
         assert_eq!(parse_source_tag("Mozilla/5.0", "copilot"), "copilot");
+    }
+
+    #[test]
+    fn test_x_source_passthrough_arbitrary() {
+        // 任意新来源原样透传，不做白名单枚举
+        assert_eq!(parse_source_tag("Mozilla/5.0", "my-new-agent"), "my-new-agent");
+        assert_eq!(parse_source_tag("Mozilla/5.0", "SomeCustomSource"), "SomeCustomSource");
+        // 即使 User-Agent 能识别，X-Source 也优先
+        assert_eq!(parse_source_tag("python-requests/2.31.0", "custom"), "custom");
     }
 
     #[test]

@@ -2,6 +2,7 @@
 //!
 //! 负责 HTTP/SSE 请求转发到上游 LLM 提供商
 
+pub mod errors;
 pub mod parser;
 pub mod sse;
 
@@ -16,6 +17,7 @@ use crate::models::ModelConfigFull;
 use crate::source_tag::{parse_source_tag, detect_source_from_body};
 use crate::AppState;
 
+use self::errors::classify;
 use self::parser::UsageStats;
 
 /// 上游请求超时（10 分钟）
@@ -163,14 +165,21 @@ impl IntoResponse for ProxyError {
                 (StatusCode::BAD_GATEWAY, axum::Json(upstream_body)).into_response()
             }
             ProxyError::UpstreamError(m, None) => {
+                // 根据分类决定状态码：我方问题 → 500，上游问题 → 502
+                let status = if m.contains("我方问题") {
+                    StatusCode::INTERNAL_SERVER_ERROR
+                } else {
+                    StatusCode::BAD_GATEWAY
+                };
                 let body = serde_json::json!({
-                    "error": {"message": format!("上游请求失败: {}", m), "type": "proxy_error", "code": 502}
+                    "error": {"message": m, "type": "proxy_error", "code": status.as_u16()}
                 });
-                (StatusCode::BAD_GATEWAY, axum::Json(body)).into_response()
+                (status, axum::Json(body)).into_response()
             }
             ProxyError::ParseError(m) => {
+                let classified = classify(&m);
                 let body = serde_json::json!({
-                    "error": {"message": format!("响应解析失败: {}", m), "type": "proxy_error", "code": 500}
+                    "error": {"message": classified.full(), "type": "proxy_error", "code": 500}
                 });
                 (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(body)).into_response()
             }
@@ -210,7 +219,7 @@ pub async fn proxy_request(
                 None => parse_source_tag(
                     headers.get("user-agent").and_then(|v| v.to_str().ok()).unwrap_or(""),
                     headers.get("x-source").and_then(|v| v.to_str().ok()).unwrap_or(""),
-                ).to_string(),
+                ),
             };
             let log_entry = RequestLogEntry {
                 id: uuid::Uuid::new_v4().to_string(),
@@ -228,7 +237,7 @@ pub async fn proxy_request(
                 status: "error".into(),
                 messages: extract_request_json(&body),
                 response: None,
-                error_msg: Some(format!("模型未配置: {}", model_name)),
+                error_msg: Some(classify(&format!("模型未配置: {}", model_name)).full()),
                 tokens_per_second: 0.0,
             };
             state.logger.write_log(log_entry);
@@ -267,7 +276,7 @@ pub async fn proxy_request(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
     // 先从头解析来源，再检查请求体中有无特征签名覆盖
-    let mut source_tag = parse_source_tag(user_agent, x_source).to_string();
+    let mut source_tag = parse_source_tag(user_agent, x_source);
     if source_tag == "unknown" {
         if let Some(body_tag) = detect_source_from_body(&body) {
             source_tag = body_tag.to_string();
@@ -322,13 +331,15 @@ pub async fn proxy_request(
         .send()
         .await
         .map_err(|e| {
-            let err_msg = if e.is_timeout() {
+            let raw_err = if e.is_timeout() {
                 "上游请求超时".to_string()
             } else if e.is_connect() {
                 format!("无法连接到上游: {}", e)
             } else {
                 e.to_string()
             };
+            let classified = classify(&raw_err);
+            let err_msg = classified.full();
             // 记录错误日志
             let log_entry = RequestLogEntry {
                 id: uuid::Uuid::new_v4().to_string(),
@@ -374,7 +385,9 @@ pub async fn proxy_request(
         Err(e) => {
             if !status_code.is_success() {
                 // 非 200 响应且无法解析 JSON —— 先写日志再返回错误
-                let err_detail = format!("上游返回 {}: {}", status_code.as_u16(), &response_text[..response_text.len().min(500)]);
+                let raw_detail = format!("上游返回 {}: {}", status_code.as_u16(), &response_text[..response_text.len().min(500)]);
+                let classified = classify(&raw_detail);
+                let err_detail = classified.full();
                 let log_entry = RequestLogEntry {
                     id: uuid::Uuid::new_v4().to_string(),
                     model_name: model_config.model_name.clone(),
@@ -459,7 +472,18 @@ pub async fn proxy_request(
         status: if success { "success" } else { "error" }.into(),
         messages: extract_request_json(&body),
         response: Some(response_text),
-        error_msg: if success { None } else { Some(format!("HTTP {}", status_code.as_u16())) },
+        error_msg: if success {
+            None
+        } else {
+            // 从上游响应体中提取错误信息并翻译
+            let raw = response_body
+                .get("error")
+                .and_then(|e| e.get("message"))
+                .and_then(|m| m.as_str())
+                .map(|m| m.to_string())
+                .unwrap_or_else(|| format!("HTTP {}", status_code.as_u16()));
+            Some(classify(&raw).full())
+        },
         tokens_per_second: tps,
     };
 
@@ -519,13 +543,15 @@ async fn proxy_stream_request(
         .send()
         .await
         .map_err(|e| {
-            let err_msg = if e.is_timeout() {
+            let raw_err = if e.is_timeout() {
                 "上游 SSE 请求超时".to_string()
             } else if e.is_connect() {
                 format!("无法连接到上游: {}", e)
             } else {
                 e.to_string()
             };
+            let classified = classify(&raw_err);
+            let err_msg = classified.full();
             // 记录错误日志
             let log_entry = RequestLogEntry {
                 id: uuid::Uuid::new_v4().to_string(),
@@ -558,6 +584,9 @@ async fn proxy_stream_request(
             .await
             .unwrap_or_else(|_| "Unknown error".into());
 
+        let classified = classify(&error_body);
+        let err_msg = classified.full();
+
         let mn = model_config.model_name.clone();
         let st = source_tag.clone();
         let end_time = chrono::Utc::now().to_rfc3339();
@@ -579,7 +608,7 @@ async fn proxy_stream_request(
             status: "error".into(),
             messages: extract_request_json(&body),
             response: Some(error_body.clone()),
-            error_msg: Some(error_body.clone()),
+            error_msg: Some(err_msg.clone()),
             tokens_per_second: 0.0,
         };
 
@@ -591,7 +620,7 @@ async fn proxy_stream_request(
             cache_hit: false, cached_tokens: 0, spend: 0.0, is_error: true,
         });
 
-        return Err(ProxyError::UpstreamError(error_body, None));
+        return Err(ProxyError::UpstreamError(err_msg, None));
     }
 
     // 流式转发
