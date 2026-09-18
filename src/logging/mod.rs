@@ -232,6 +232,12 @@ impl BatchLogger {
 
             if let Err(e) = query.execute(db).await {
                 tracing::error!("批量日志写入失败 ({} 条): {}", chunk.len(), e);
+                // 降级为逐条写入，避免整批因单条坏数据或瞬时故障全部丢失
+                for entry in chunk {
+                    if let Err(e2) = write_request_log(db, entry).await {
+                        tracing::error!("单条日志写入仍失败: {}", e2);
+                    }
+                }
             }
         }
     }
@@ -296,7 +302,7 @@ pub async fn update_daily_stats(
     spend: f64,
     is_error: bool,
 ) -> anyhow::Result<()> {
-    let today = Utc::now().format("%Y-%m-%d").to_string();
+    let today = (Utc::now() + chrono::Duration::hours(8)).format("%Y-%m-%d").to_string();
     let cache_hit_int = if cache_hit { 1 } else { 0 };
     let failed_int = if is_error { 1 } else { 0 };
 
@@ -376,7 +382,7 @@ async fn sliding_window_cleanup(db: &PgPool, default_retention_days: i64) {
             total_tokens, prompt_tokens, completion_tokens, cache_hits,
             cached_tokens, total_spend, failed_requests)
         SELECT
-            DATE(start_time) as date,
+            (start_time::timestamptz AT TIME ZONE 'UTC' + interval '8 hours')::date as date,
             model_name,
             source_tag,
             COUNT(*)::bigint as total_requests,
@@ -388,9 +394,9 @@ async fn sliding_window_cleanup(db: &PgPool, default_retention_days: i64) {
             SUM(spend) as total_spend,
             SUM(CASE WHEN status != 'success' THEN 1 ELSE 0 END)::bigint as failed_requests
         FROM request_logs
-        WHERE start_time >= CURRENT_DATE - INTERVAL '1 day'
+        WHERE start_time::timestamptz >= (now() - INTERVAL '1 day')
           AND source_tag != 'test'
-        GROUP BY DATE(start_time), model_name, source_tag
+        GROUP BY (start_time::timestamptz AT TIME ZONE 'UTC' + interval '8 hours')::date, model_name, source_tag
         ON CONFLICT(date, model_name, source_tag) DO UPDATE SET
             total_requests        = EXCLUDED.total_requests,
             total_tokens          = EXCLUDED.total_tokens,
@@ -416,7 +422,7 @@ async fn sliding_window_cleanup(db: &PgPool, default_retention_days: i64) {
 
     // ── 2. 超过 retention_days 天的记录删除整条 ──
     let deleted = sqlx::query(
-        "DELETE FROM request_logs WHERE created_at < CURRENT_DATE - $1::interval",
+        "DELETE FROM request_logs WHERE created_at < (now() - $1::interval)",
     )
     .bind(format!("{} days", retention_days))
     .execute(db)
@@ -430,14 +436,14 @@ async fn sliding_window_cleanup(db: &PgPool, default_retention_days: i64) {
     if deleted > 0 {
         tracing::info!("已删除 {} 条过期记录（>{}天）", deleted, retention_days);
 
-        // ── 3. 物理回收空间（VACUUM FULL 会锁表，仅在有删除时执行）──
-        // 删除记录后 PostgreSQL 不会自动把空间还给操作系统，
-        // 需 VACUUM FULL 才能物理回收（尤其 TOAST 大字段）。
-        // 注意：VACUUM FULL 会短暂锁表，期间写入会阻塞，故仅在确实删了数据时执行。
-        tracing::info!("开始 VACUUM FULL request_logs 物理回收空间...");
-        match sqlx::query("VACUUM FULL request_logs").execute(db).await {
-            Ok(_) => tracing::info!("VACUUM FULL 完成，空间已回收"),
-            Err(e) => tracing::error!("VACUUM FULL 失败: {}", e),
+        // ── 3. 清理死元组（普通 VACUUM，不锁表，避免阻塞日志写入）──
+        // 删除记录后 PostgreSQL 不会自动复用空间，普通 VACUUM 标记为可复用即可；
+        // 不用 VACUUM FULL：它虽能物理回收空间，却会 ACCESS EXCLUSIVE 锁表，
+        // 在高写入下会导致日志批量写入 acquire 超时丢日志，稳定性优先。
+        tracing::info!("开始 VACUUM request_logs 清理死元组...");
+        match sqlx::query("VACUUM request_logs").execute(db).await {
+            Ok(_) => tracing::info!("VACUUM 完成"),
+            Err(e) => tracing::error!("VACUUM 失败: {}", e),
         }
     }
 }
@@ -446,6 +452,15 @@ async fn sliding_window_cleanup(db: &PgPool, default_retention_days: i64) {
 ///
 /// 仅在 daily_stats 为空但 request_logs 有数据时执行。
 pub async fn sync_daily_stats_from_logs(db: &PgPool) {
+    // 仅当 daily_stats 为空且 request_logs 有数据时才重建，避免每次重启全量扫描
+    let stats_count: (i64,) = sqlx::query_as("SELECT COUNT(*)::bigint FROM daily_stats")
+        .fetch_one(db)
+        .await
+        .unwrap_or((1,));
+    if stats_count.0 > 0 {
+        return; // daily_stats 已有数据，无需重建
+    }
+
     let logs_count: (i64,) = sqlx::query_as("SELECT COUNT(*)::bigint FROM request_logs")
         .fetch_one(db)
         .await
@@ -466,7 +481,7 @@ pub async fn sync_daily_stats_from_logs(db: &PgPool) {
             total_tokens, prompt_tokens, completion_tokens, cache_hits,
             cached_tokens, total_spend, failed_requests)
         SELECT
-            DATE(start_time) as date,
+            (start_time::timestamptz AT TIME ZONE 'UTC' + interval '8 hours')::date as date,
             model_name,
             source_tag,
             COUNT(*)::bigint as total_requests,
@@ -479,7 +494,7 @@ pub async fn sync_daily_stats_from_logs(db: &PgPool) {
             SUM(CASE WHEN status != 'success' THEN 1 ELSE 0 END)::bigint as failed_requests
         FROM request_logs
         WHERE source_tag != 'test'
-        GROUP BY DATE(start_time), model_name, source_tag
+        GROUP BY (start_time::timestamptz AT TIME ZONE 'UTC' + interval '8 hours')::date, model_name, source_tag
         ON CONFLICT(date, model_name, source_tag) DO UPDATE SET
             total_requests = EXCLUDED.total_requests,
             total_tokens = EXCLUDED.total_tokens,

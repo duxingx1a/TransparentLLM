@@ -148,7 +148,8 @@ fn parse_sse_as_value(response_text: &str) -> Option<serde_json::Value> {
 #[derive(Debug)]
 pub enum ProxyError {
     ModelNotFound(String),
-    UpstreamError(String, Option<serde_json::Value>),
+    /// 上游错误：message + 可选原始上游状态码（None=网络等未知错误，按分类返回）
+    UpstreamError(String, Option<StatusCode>),
     ParseError(String),
 }
 
@@ -161,11 +162,15 @@ impl IntoResponse for ProxyError {
                 });
                 (StatusCode::NOT_FOUND, axum::Json(body)).into_response()
             }
-            ProxyError::UpstreamError(_m, Some(upstream_body)) => {
-                (StatusCode::BAD_GATEWAY, axum::Json(upstream_body)).into_response()
+            ProxyError::UpstreamError(m, Some(status)) => {
+                // 透传上游真实状态码（4xx/5xx 原样），保留 OpenAI SDK 对 429/401/500 的重试语义
+                let body = serde_json::json!({
+                    "error": {"message": m, "type": "proxy_error", "code": status.as_u16()}
+                });
+                (status, axum::Json(body)).into_response()
             }
             ProxyError::UpstreamError(m, None) => {
-                // 根据分类决定状态码：我方问题 → 500，上游问题 → 502
+                // 无上游状态码（网络错误等）：根据分类决定 500（我方）或 502（上游）
                 let status = if m.contains("我方问题") {
                     StatusCode::INTERNAL_SERVER_ERROR
                 } else {
@@ -213,43 +218,61 @@ pub async fn proxy_request(
     let model_config = match model_config {
         Some(cfg) => cfg,
         None => {
-            // 记录错误日志
-            let err_source_tag = match detect_source_from_body(&body) {
-                Some(tag) => tag.to_string(),
-                None => parse_source_tag(
-                    headers.get("user-agent").and_then(|v| v.to_str().ok()).unwrap_or(""),
-                    headers.get("x-source").and_then(|v| v.to_str().ok()).unwrap_or(""),
-                ),
+            // 缓存未命中：回查数据库兜底（如启动时缓存未载入/重建失败等场景）
+            let db_lookup = if let Some((provider, name)) = model_name.split_once('-') {
+                crate::models::get_model_by_name_and_provider(&state.db, name, provider)
+                    .await
+                    .ok()
+                    .flatten()
+            } else {
+                crate::models::get_model_by_name(&state.db, &model_name)
+                    .await
+                    .ok()
+                    .flatten()
             };
-            let log_entry = RequestLogEntry {
-                id: uuid::Uuid::new_v4().to_string(),
-                model_name: model_name.clone(),
-                provider: String::new(),
-                api_base: String::new(),
-                source_tag: err_source_tag,
-                start_time: start_time.clone(),
-                end_time: chrono::Utc::now().to_rfc3339(),
-                completion_start_time: None,
-                duration_ms: start.elapsed().as_millis() as i64,
-                total_tokens: 0, prompt_tokens: 0, completion_tokens: 0,
-                cache_hit: false, cache_key: None, cached_tokens: 0,
-                spend: 0.0,
-                status: "error".into(),
-                messages: extract_request_json(&body),
-                response: None,
-                error_msg: Some(classify(&format!("模型未配置: {}", model_name)).full()),
-                tokens_per_second: 0.0,
-            };
-            state.logger.write_log(log_entry);
-            return Err(ProxyError::ModelNotFound(model_name));
+            match db_lookup {
+                Some(cfg) => cfg,
+                None => {
+                    // 记录错误日志
+                    let err_source_tag = match detect_source_from_body(&body) {
+                        Some(tag) => tag.to_string(),
+                        None => parse_source_tag(
+                            headers.get("user-agent").and_then(|v| v.to_str().ok()).unwrap_or(""),
+                            headers.get("x-source").and_then(|v| v.to_str().ok()).unwrap_or(""),
+                        ),
+                    };
+                    let log_entry = RequestLogEntry {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        model_name: model_name.clone(),
+                        provider: String::new(),
+                        api_base: String::new(),
+                        source_tag: err_source_tag,
+                        start_time: start_time.clone(),
+                        end_time: chrono::Utc::now().to_rfc3339(),
+                        completion_start_time: None,
+                        duration_ms: start.elapsed().as_millis() as i64,
+                        total_tokens: 0, prompt_tokens: 0, completion_tokens: 0,
+                        cache_hit: false, cache_key: None, cached_tokens: 0,
+                        spend: 0.0,
+                        status: "error".into(),
+                        messages: extract_request_json(&body),
+                        response: None,
+                        error_msg: Some(classify(&format!("模型未配置: {}", model_name)).full()),
+                        tokens_per_second: 0.0,
+                    };
+                    state.logger.write_log(log_entry);
+                    return Err(ProxyError::ModelNotFound(model_name));
+                }
+            }
         }
     };
 
     let mut api_key = model_config.api_key.clone();
 
-    // 如果 api_key 是占位符，从提供商表获取真实 key
-    if api_key == "auto-from-provider" || api_key.is_empty() {
-        if let Ok(Some(prov_row)) = crate::models::get_provider_by_name(&state.db, &model_config.provider).await {
+    // provider 是密钥的唯一权威：只要该 provider 存在且有 api_key，一律用它。
+    // 这样在提供商管理里更换 key 后，该 provider 下所有模型自动切换，无需逐个改模型。
+    if let Ok(Some(prov_row)) = crate::models::get_provider_by_name(&state.db, &model_config.provider).await {
+        if !prov_row.api_key.is_empty() {
             api_key = prov_row.api_key.clone();
         }
     }
@@ -262,8 +285,8 @@ pub async fn proxy_request(
             model_config.model_name.clone()
         }
     };
-    let mut upstream_body = body.clone();
-    if let Some(obj) = upstream_body.as_object_mut() {
+    let mut body = body;
+    if let Some(obj) = body.as_object_mut() {
         obj.insert("model".into(), serde_json::Value::String(upstream_real_name.clone()));
     }
 
@@ -283,14 +306,14 @@ pub async fn proxy_request(
         }
     }
 
-    let is_stream = upstream_body
+    let is_stream = body
         .get("stream")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
     if is_stream {
         return proxy_stream_request(
-            state, upstream_body, model_config, api_key, upstream_real_name.to_string(),
+            state, body, model_config, api_key, upstream_real_name.to_string(),
             source_tag, start_time, start,
         )
         .await;
@@ -320,14 +343,14 @@ pub async fn proxy_request(
     }
 
     // 记录请求体大小（用于排查上游 413 问题）
-    let body_size = serde_json::to_string(&upstream_body).map(|s| s.len()).unwrap_or(0);
+    let body_size = serde_json::to_string(&body).map(|s| s.len()).unwrap_or(0);
     tracing::info!(
         "转发请求 model={} upstream={} body_size={} bytes ({:.2} MB)",
         model_config.model_name, upstream_url, body_size, body_size as f64 / 1_048_576.0
     );
 
     let response = request_builder
-        .json(&upstream_body)
+        .json(&body)
         .send()
         .await
         .map_err(|e| {
@@ -408,7 +431,10 @@ pub async fn proxy_request(
                     tokens_per_second: 0.0,
                 };
                 state.logger.write_log(log_entry);
-                return Err(ProxyError::UpstreamError(err_detail, None));
+                return Err(ProxyError::UpstreamError(
+                    err_detail,
+                    Some(StatusCode::from_u16(status_code.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY)),
+                ));
             }
             // 尝试解析 SSE 流式格式（某些提供商在 stream=false 时也返回 SSE）
             match parse_sse_as_value(&response_text) {
@@ -522,6 +548,17 @@ async fn proxy_stream_request(
     start_time: String,
     start: Instant,
 ) -> Result<Response, ProxyError> {
+    let mut body = body;
+    // 注入 include_usage：多数客户端不主动请求 usage，导致流式 token/花费统计为 0
+    if let Some(obj) = body.as_object_mut() {
+        if !obj.contains_key("stream_options") {
+            obj.insert(
+                "stream_options".into(),
+                serde_json::json!({"include_usage": true}),
+            );
+        }
+    }
+
     let client = http_client();
     let upstream_url = format!(
         "{}/chat/completions",
@@ -620,7 +657,10 @@ async fn proxy_stream_request(
             cache_hit: false, cached_tokens: 0, spend: 0.0, is_error: true,
         });
 
-        return Err(ProxyError::UpstreamError(err_msg, None));
+        return Err(ProxyError::UpstreamError(
+            err_msg,
+            Some(StatusCode::from_u16(status_code.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY)),
+        ));
     }
 
     // 流式转发

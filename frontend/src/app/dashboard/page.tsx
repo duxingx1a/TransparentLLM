@@ -336,7 +336,7 @@ export default function DashboardPage() {
           {/* 最顶部：永久总计 3张卡片 */}
           <div className="grid grid-cols-3 gap-4 mb-6">
             <StatCard label="总花费" value={formatSpend(data.total.total_spend)} color="#3B82F6"
-              sub={`${formatSpend(data.total.total_spend * 0.1)} 缓存 + ${formatSpend(data.total.total_spend * 0.3)} 输入 + ${formatSpend(data.total.total_spend * 0.6)} 输出`} />
+              sub={`${formatNumber(data.total.cached_tokens)} 缓存 + ${formatNumber(data.total.prompt_tokens - data.total.cached_tokens)} 输入 + ${formatNumber(data.total.completion_tokens)} 输出`} />
             <StatCard label="总 Token" value={formatNumber(data.total.total_tokens)} color="#3CB4D9"
               sub={`${formatNumber(data.total.cached_tokens)} 缓存 + ${formatNumber(data.total.prompt_tokens - data.total.cached_tokens)} 输入 + ${formatNumber(data.total.completion_tokens)} 输出`} />
             <StatCard label="总请求" value={formatNumber(data.total.total_requests)} color="#10B981"
@@ -479,7 +479,7 @@ export default function DashboardPage() {
             {/* 筛选数据 3张卡片 */}
             <div className="grid grid-cols-3 gap-4 mb-4">
               <StatCard label={`${getTimeLabel(timeRange, customRange)}花费`} value={formatSpend(filteredStats.total_spend)} color="#3B82F6"
-                sub={`${formatSpend(filteredStats.total_spend * 0.1)} 缓存 + ${formatSpend(filteredStats.total_spend * 0.3)} 输入 + ${formatSpend(filteredStats.total_spend * 0.6)} 输出`} />
+                sub={`${formatNumber(filteredStats.cached_tokens)} 缓存 + ${formatNumber(filteredStats.prompt_tokens - filteredStats.cached_tokens)} 输入 + ${formatNumber(filteredStats.completion_tokens)} 输出`} />
               <StatCard label={`${getTimeLabel(timeRange, customRange)}Token`} value={formatNumber(filteredStats.total_tokens)} color="#3CB4D9"
                 sub={`${formatNumber(filteredStats.cached_tokens)} 缓存 + ${formatNumber(filteredStats.prompt_tokens - filteredStats.cached_tokens)} 输入 + ${formatNumber(filteredStats.completion_tokens)} 输出`} />
               <StatCard label={`${getTimeLabel(timeRange, customRange)}请求`} value={formatNumber(filteredStats.total_requests)} color="#10B981"

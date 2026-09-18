@@ -36,6 +36,8 @@ pub struct CreateModelRequest {
     pub model_name: String,
     pub provider: String,
     pub api_base: String,
+    /// 模型不自带 Key，统一由提供商提供（此字段保留仅为兼容，实际存占位符）
+    #[serde(default)]
     pub api_key: String,
     /// 上游真实模型名（可选，默认等于 model_name）
     #[serde(default)]
@@ -180,7 +182,7 @@ pub async fn create_model(
     .bind(&req.model_name)
     .bind(&req.provider)
     .bind(&req.api_base)
-    .bind(&req.api_key)
+    .bind("auto-from-provider") // 模型不自带 Key，统一用提供商 Key（换 key 后全模型自动跟随）
     .bind(req.input_price)
     .bind(req.output_price)
     .bind(req.cache_price)

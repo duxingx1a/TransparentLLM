@@ -47,9 +47,8 @@ export default function ModelsPage() {
   const [editingModel, setEditingModel] = useState<ModelConfig | null>(null);
   const [form] = Form.useForm();
 
-  // 小眼睛状态：列表行和表单输入框
+  // 小眼睛状态：列表行（表单中 Key 已为只读，不再需要）
   const [visibleKeys, setVisibleKeys] = useState<Set<string>>(new Set());
-  const [formKeyVisible, setFormKeyVisible] = useState(false);
 
   // 从提供商拉取的模型名称列表
   const [providerModels, setProviderModels] = useState<string[]>([]);
@@ -149,15 +148,18 @@ export default function ModelsPage() {
     // 查找匹配的提供商
     const matched = providers.find((p) => p.name === value);
     if (matched) {
-      // 自动填充 api_base 和 api_key（从提供商获取）
-      form.setFieldsValue({
-        api_base: matched.api_base,
-        api_key: matched.api_key,
-      });
+      // 自动填充 api_base；Key 由提供商统一提供，模型不自带
+      form.setFieldsValue({ api_base: matched.api_base });
       // 拉取模型列表
       handleFetchProviderModels(value);
     }
   };
+
+  // 当前选中提供商的 Key（只读展示，模型不自带 Key）
+  const watchProvider = Form.useWatch("provider", form);
+  const currentProviderKey = watchProvider
+    ? (providers.find((p) => p.name === watchProvider)?.api_key || "")
+    : "";
 
   const handleOpenCreate = () => {
     setEditingModel(null);
@@ -168,8 +170,6 @@ export default function ModelsPage() {
       output_price: 0,
       cache_price: 0,
     });
-    setProviderModels([]);
-    setFormKeyVisible(false);
     setModalOpen(true);
   };
 
@@ -179,14 +179,11 @@ export default function ModelsPage() {
       model_name: model.model_name,
       provider: model.provider,
       api_base: model.api_base,
-      api_key: "",
       input_price: model.input_price,
       output_price: model.output_price,
       cache_price: model.cache_price,
       model_type: model.model_type,
     });
-    setProviderModels([]);
-    setFormKeyVisible(false);
     setModalOpen(true);
   };
 
@@ -195,7 +192,6 @@ export default function ModelsPage() {
     setEditingModel(null);
     form.resetFields();
     setProviderModels([]);
-    setFormKeyVisible(false);
   };
 
   const handleSubmit = async () => {
@@ -320,8 +316,8 @@ export default function ModelsPage() {
           <Form.Item name="api_base" label="API 地址" rules={[{ required: true, message: "请输入 API 地址" }]}>
             <Input placeholder="https://api.openai.com/v1" />
           </Form.Item>
-          <Form.Item name="api_key" label={editingModel ? "API Key（留空不修改）" : "API Key（选择已有提供商自动填充）"} rules={editingModel ? [] : [{ required: true, message: "请选择提供商或手动输入 API Key" }]}>
-            <Input type={formKeyVisible ? "text" : "password"} placeholder={editingModel ? "留空则保持原 Key 不变" : "sk-xxxx"} suffix={<Button type="text" size="small" icon={formKeyVisible ? <EyeInvisibleOutlined /> : <EyeOutlined />} onClick={() => setFormKeyVisible(!formKeyVisible)} tabIndex={-1} />} />
+          <Form.Item label="API Key" tooltip="由提供商统一提供，此处只读。在提供商管理更换 Key 后，该模型自动跟随">
+            <Input value={currentProviderKey} readOnly disabled placeholder="跟随提供商（提供商无 Key 则无）" />
           </Form.Item>
           <Form.Item name="model_type" label="模型类型">
             <Select options={[{ label: "对话 (Chat)", value: "chat" }, { label: "嵌入 (Embedding)", value: "embedding" }, { label: "图像 (Image)", value: "image" }, { label: "音频 (Audio)", value: "audio" }]} />

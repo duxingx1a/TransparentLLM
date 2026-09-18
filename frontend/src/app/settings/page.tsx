@@ -4,26 +4,22 @@ import React, { useState } from "react";
 import {
   Card,
   Form,
-  Input,
   InputNumber,
   Button,
   Typography,
-  Divider,
   message,
   Spin,
   Space,
-  Alert,
 } from "antd";
-import { SaveOutlined, KeyOutlined } from "@ant-design/icons";
+import { SaveOutlined } from "@ant-design/icons";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { settingsApi } from "@/lib/api";
 import type { AppSettings } from "@/types";
 
-const { Title, Text } = Typography;
+const { Text } = Typography;
 
 export default function SettingsPage() {
   const [generalForm] = Form.useForm();
-  const [keyForm] = Form.useForm();
   const queryClient = useQueryClient();
 
   const { data, isLoading } = useQuery<AppSettings>({
@@ -38,19 +34,6 @@ export default function SettingsPage() {
     onSuccess: () => {
       message.success("设置已保存");
       queryClient.invalidateQueries({ queryKey: ["settings"] });
-    },
-    onError: (err: Error) => message.error(err.message),
-  });
-
-  // 修改主密钥
-  const updateKey = useMutation({
-    mutationFn: (values: {
-      old_master_key: string;
-      master_key: string;
-    }) => settingsApi.update(values),
-    onSuccess: () => {
-      message.success("主密钥已更新");
-      keyForm.resetFields();
     },
     onError: (err: Error) => message.error(err.message),
   });
@@ -106,56 +89,6 @@ export default function SettingsPage() {
               loading={updateSettings.isPending}
             >
               保存设置
-            </Button>
-          </Form.Item>
-        </Form>
-      </Card>
-
-      {/* 修改主密钥 */}
-      <Card title="修改主密钥">
-        <Alert
-          message="修改主密钥需要验证旧密钥，请确保记住新密钥"
-          type="warning"
-          showIcon
-          style={{ marginBottom: 16 }}
-        />
-        <Form
-          form={keyForm}
-          layout="vertical"
-          onFinish={(values) => updateKey.mutate(values)}
-        >
-          <Form.Item
-            name="old_master_key"
-            label="当前主密钥"
-            rules={[{ required: true, message: "请输入当前主密钥" }]}
-          >
-            <Input.Password
-              placeholder="输入当前主密钥"
-              prefix={<KeyOutlined />}
-            />
-          </Form.Item>
-          <Form.Item
-            name="master_key"
-            label="新主密钥"
-            rules={[
-              { required: true, message: "请输入新主密钥" },
-              { min: 8, message: "密钥长度至少 8 位" },
-            ]}
-          >
-            <Input.Password
-              placeholder="输入新主密钥（至少 8 位）"
-              prefix={<KeyOutlined />}
-            />
-          </Form.Item>
-          <Form.Item>
-            <Button
-              type="primary"
-              icon={<SaveOutlined />}
-              htmlType="submit"
-              loading={updateKey.isPending}
-              danger
-            >
-              更新主密钥
             </Button>
           </Form.Item>
         </Form>

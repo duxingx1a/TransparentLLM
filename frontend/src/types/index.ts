@@ -23,7 +23,7 @@ export interface ModelFormData {
   model_name: string;
   provider: string;
   api_base: string;
-  api_key: string;
+  api_key?: string;
   input_price?: number;
   output_price?: number;
   cache_price?: number;

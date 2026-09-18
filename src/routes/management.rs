@@ -112,13 +112,12 @@ async fn list_models(
     match crate::models::list_models(&state.db).await {
         Ok(mut models) => {
             // 如果 api_key 是占位符，替换为提供商的真实 key
+            // 模型的 Key 始终取自 provider（只读引用），展示 provider 的最新值
             for model in &mut models {
-                if model.api_key == "auto-from-provider" {
-                    if let Ok(Some(prov)) = crate::models::get_provider_by_name(
-                        &state.db, &model.provider,
-                    ).await {
-                        model.api_key = prov.api_key.clone();
-                    }
+                if let Ok(Some(prov)) = crate::models::get_provider_by_name(
+                    &state.db, &model.provider,
+                ).await {
+                    model.api_key = prov.api_key.clone();
                 }
             }
             Json(ModelListResponse { models }).into_response()
@@ -330,9 +329,9 @@ async fn do_recalculate_spend(db: &sqlx::PgPool) {
 
     // 先收集所有更新，不直接写 DB
     let mut spend_updates: Vec<(f64, String)> = Vec::with_capacity(logs.len());
-    let mut stats_rows: std::collections::HashMap<(String, String, String), (i64, i64, i64, i64, i64, i64, f64)> = std::collections::HashMap::new();
+    let mut stats_rows: std::collections::HashMap<(String, String, String), (i64, i64, i64, i64, i64, i64, f64, i64)> = std::collections::HashMap::new();
 
-    for (id, model_name, _provider, prompt_tokens, completion_tokens, cached_tokens, _total_tokens, cache_hit, source_tag, start_time, _end_time, _completion_start_time, _status, _old_spend) in &logs {
+    for (id, model_name, _provider, prompt_tokens, completion_tokens, cached_tokens, total_tokens, cache_hit, source_tag, start_time, _end_time, _completion_start_time, status, _old_spend) in &logs {
         // test 来源不计费、不计入 daily_stats（只在日志中显示）
         if source_tag == "test" {
             continue;
@@ -351,14 +350,15 @@ async fn do_recalculate_spend(db: &sqlx::PgPool) {
 
         let date = &start_time[..10];
         let key = (date.to_string(), model_name.clone(), source_tag.clone());
-        let entry = stats_rows.entry(key).or_insert((0, 0, 0, 0, 0, 0, 0.0));
+        let entry = stats_rows.entry(key).or_insert((0, 0, 0, 0, 0, 0, 0.0, 0));
         entry.0 += 1;                          // total_requests
-        entry.1 += *prompt_tokens;              // total_tokens
+        entry.1 += *total_tokens;               // total_tokens
         entry.2 += *prompt_tokens;              // prompt_tokens
         entry.3 += *completion_tokens;          // completion_tokens
         if *cache_hit != 0 { entry.4 += 1; }   // cache_hits
         entry.5 += *cached_tokens;              // cached_tokens
         entry.6 += new_spend;                  // total_spend
+        if status != "success" { entry.7 += 1; } // failed_requests
     }
 
     // 4. 在一个事务中原子更新：先改 spend，再合并 daily_stats（保留历史，不删除）
@@ -377,10 +377,10 @@ async fn do_recalculate_spend(db: &sqlx::PgPool) {
     }
 
     // 合并 daily_stats：用 UPSERT 更新现有统计，保留历史（不再 DELETE 整表）
-    for ((date, model_name, source_tag), (total_requests, total_tokens, prompt_tokens, completion_tokens, cache_hits, cached_tokens, total_spend)) in &stats_rows {
+    for ((date, model_name, source_tag), (total_requests, total_tokens, prompt_tokens, completion_tokens, cache_hits, cached_tokens, total_spend, failed_requests)) in &stats_rows {
         sqlx::query(
             "INSERT INTO daily_stats (date, model_name, source_tag, total_requests, total_tokens, prompt_tokens, completion_tokens, cache_hits, cached_tokens, total_spend, failed_requests) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 0) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
              ON CONFLICT (date, model_name, source_tag) DO UPDATE SET \
                 total_requests    = EXCLUDED.total_requests, \
                 total_tokens     = EXCLUDED.total_tokens, \
@@ -401,6 +401,7 @@ async fn do_recalculate_spend(db: &sqlx::PgPool) {
         .bind(cache_hits)
         .bind(cached_tokens)
         .bind(total_spend)
+        .bind(failed_requests)
         .execute(&mut *tx)
         .await
         .ok();

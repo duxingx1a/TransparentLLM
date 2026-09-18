@@ -118,13 +118,20 @@ export default function LogsPage() {
   }, [page, modelFilter, providerFilter, sourceFilter, statusFilter, timeRange, customRange, sortConfig, showFilters]);
 
   const dateRange = useMemo((): [string, string] | null => {
-    if (customRange) return customRange;
+    // 统一按 UTC+8 导出，带时区偏移，避免后端按会话时区(UTC)解释导致 8 小时错位
+    const FMT = "YYYY-MM-DD[T]HH:mm:ss[+08:00]";
+    if (customRange) {
+      return [
+        dayjs(customRange[0]).format(FMT),
+        dayjs(customRange[1]).format(FMT),
+      ];
+    }
     const match = timeRange.match(/^(\d+)(m|h|d)$/);
     if (!match) return null;
     const [, num, unit] = match;
     const end = dayjs();
     const start = end.subtract(Number(num), unit === "m" ? "minute" : unit === "h" ? "hour" : "day");
-    return [start.format("YYYY-MM-DD HH:mm:ss"), end.format("YYYY-MM-DD HH:mm:ss")];
+    return [start.format(FMT), end.format(FMT)];
   }, [timeRange, customRange]);
 
   const queryParams: LogQueryParams = {
