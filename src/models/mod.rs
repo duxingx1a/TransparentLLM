@@ -171,6 +171,20 @@ pub async fn create_model(
 ) -> anyhow::Result<ModelConfig> {
     let id = uuid::Uuid::new_v4().to_string();
 
+    // 模型 Key：不填 / auto-from-provider 时，创建即取 provider 的真实 Key 实体落库；
+    // 手动填了则用模型自己的 Key。
+    let api_key = if req.api_key.is_empty() || req.api_key == "auto-from-provider" {
+        match get_provider_by_name(db, &req.provider).await? {
+            Some(p) if !p.api_key.is_empty() => p.api_key,
+            _ => anyhow::bail!(
+                "提供商 {} 不存在或未配置 API Key，请先在提供商中配置",
+                req.provider
+            ),
+        }
+    } else {
+        req.api_key.clone()
+    };
+
     sqlx::query(
         r#"
         INSERT INTO models (id, model_name, provider, api_base, api_key,
@@ -182,7 +196,7 @@ pub async fn create_model(
     .bind(&req.model_name)
     .bind(&req.provider)
     .bind(&req.api_base)
-    .bind("auto-from-provider") // 模型不自带 Key，统一用提供商 Key（换 key 后全模型自动跟随）
+    .bind(&api_key)
     .bind(req.input_price)
     .bind(req.output_price)
     .bind(req.cache_price)

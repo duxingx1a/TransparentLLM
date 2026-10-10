@@ -155,12 +155,6 @@ export default function ModelsPage() {
     }
   };
 
-  // 当前选中提供商的 Key（只读展示，模型不自带 Key）
-  const watchProvider = Form.useWatch("provider", form);
-  const currentProviderKey = watchProvider
-    ? (providers.find((p) => p.name === watchProvider)?.api_key || "")
-    : "";
-
   const handleOpenCreate = () => {
     setEditingModel(null);
     form.resetFields();
@@ -316,8 +310,8 @@ export default function ModelsPage() {
           <Form.Item name="api_base" label="API 地址" rules={[{ required: true, message: "请输入 API 地址" }]}>
             <Input placeholder="https://api.openai.com/v1" />
           </Form.Item>
-          <Form.Item label="API Key" tooltip="由提供商统一提供，此处只读。在提供商管理更换 Key 后，该模型自动跟随">
-            <Input value={currentProviderKey} readOnly disabled placeholder="跟随提供商（提供商无 Key 则无）" />
+          <Form.Item name="api_key" label="API Key" tooltip="留空 = 创建时自动填入提供商 Key（默认跟随）；填写 = 使用独立 Key 覆盖">          
+            <Input placeholder="留空跟随提供商 Key；或输入独立 Key" />
           </Form.Item>
           <Form.Item name="model_type" label="模型类型">
             <Select options={[{ label: "对话 (Chat)", value: "chat" }, { label: "嵌入 (Embedding)", value: "embedding" }, { label: "图像 (Image)", value: "image" }, { label: "音频 (Audio)", value: "audio" }]} />
