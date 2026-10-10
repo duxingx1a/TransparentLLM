@@ -220,10 +220,18 @@ pub async fn proxy_request(
         None => {
             // 缓存未命中：回查数据库兜底（如启动时缓存未载入/重建失败等场景）
             let db_lookup = if let Some((provider, name)) = model_name.split_once('-') {
-                crate::models::get_model_by_name_and_provider(&state.db, name, provider)
+                match crate::models::get_model_by_name_and_provider(&state.db, name, provider)
                     .await
                     .ok()
                     .flatten()
+                {
+                    Some(cfg) => Some(cfg),
+                    // 带前缀精确匹配失败：回退到按完整模型名匹配（名字本身含 - 时也适用）
+                    None => crate::models::get_model_by_name(&state.db, &model_name)
+                        .await
+                        .ok()
+                        .flatten(),
+                }
             } else {
                 crate::models::get_model_by_name(&state.db, &model_name)
                     .await
@@ -300,7 +308,9 @@ pub async fn proxy_request(
         .unwrap_or("");
     // 先从头解析来源，再检查请求体中有无特征签名覆盖
     let mut source_tag = parse_source_tag(user_agent, x_source);
-    if source_tag == "unknown" {
+    // 无显式 X-Source 时，用请求体特征（hermes 等）覆盖通用 SDK UA，
+    // 避免 UA 透传（如 OpenAI/Python）盖过 body 签名
+    if x_source.trim().is_empty() {
         if let Some(body_tag) = detect_source_from_body(&body) {
             source_tag = body_tag.to_string();
         }

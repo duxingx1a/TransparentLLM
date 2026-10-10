@@ -82,8 +82,11 @@ export function QuickInfo({ apiBase }: QuickInfoProps) {
                 fontWeight: 500,
               }}
             >
-              Authorization: Bearer admin
+              Authorization: Bearer &lt;登录key&gt;
             </Tag>
+            <Text type="secondary" style={{ fontSize: 13 }}>
+              （登录 /ui 后 docs 命令会自动填入你的 master key）
+            </Text>
           </div>
         </div>
       </div>

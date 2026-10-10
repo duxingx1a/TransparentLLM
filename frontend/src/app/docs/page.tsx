@@ -51,6 +51,17 @@ export default function DocsPage() {
   );
   const [apiBase, setApiBase] = useState("");
   const [detecting, setDetecting] = useState(true);
+  // 已登录管理后台时，把登录态 master key 自动填入 curl 命令
+  const [authKey, setAuthKey] = useState("");
+
+  // 读登录态 key（/ui 登录后 localStorage 会存 master_key）
+  useEffect(() => {
+    setAuthKey(
+      (typeof window !== "undefined" &&
+        (localStorage.getItem("master_key") as string | null)) ||
+        ""
+    );
+  }, []);
 
   useEffect(() => {
     detectApiBase().then((url) => {
@@ -64,10 +75,10 @@ export default function DocsPage() {
   // ========== 模型列表命令 ==========
   const curlModelsWithJq = [
     `curl -s ${apiBase}/v1/models \\`,
-    `  -H "Authorization: Bearer admin" | jq .`,
+    `  -H "Authorization: Bearer ${authKey}" | jq .`,
   ].join("\n");
 
-  const curlModelsWithoutJq = `curl -s ${apiBase}/v1/models -H "Authorization: Bearer admin"`;
+  const curlModelsWithoutJq = `curl -s ${apiBase}/v1/models -H "Authorization: Bearer ${authKey}"`;
 
   // ========== 对话命令 ==========
   const chatPayload = selectedModel
@@ -94,13 +105,13 @@ export default function DocsPage() {
     ? [
         `curl -s ${apiBase}/v1/chat/completions \\`,
         `  -H "Content-Type: application/json" \\`,
-        `  -H "Authorization: Bearer admin" \\`,
+        `  -H "Authorization: Bearer ${authKey}" \\`,
         `  -d '${chatPayload}' | jq .`,
       ].join("\n")
     : "选择模型后自动生成 curl 命令";
 
   const curlChatWithoutJq = selectedModel
-    ? `curl -s ${apiBase}/v1/chat/completions -H "Content-Type: application/json" -H "Authorization: Bearer admin" -d '${chatPayloadCompact}'`
+    ? `curl -s ${apiBase}/v1/chat/completions -H "Content-Type: application/json" -H "Authorization: Bearer ${authKey}" -d '${chatPayloadCompact}'`
     : "选择模型后自动生成 curl 命令";
 
   if (detecting) {
@@ -137,6 +148,9 @@ export default function DocsPage() {
         <Paragraph type="secondary" style={{ fontSize: 15, margin: 0 }}>
           TransparentLLM 兼容 OpenAI API 格式，将客户端指向代理地址即可使用。
         </Paragraph>
+        <Text type="secondary" style={{ fontSize: 13, display: "block", marginTop: 8 }}>
+          下面命令中的 Bearer 已自动填入你当前的登录 key。
+        </Text>
       </div>
 
       {/* ===== 快速开始 ===== */}
@@ -225,7 +239,7 @@ export default function DocsPage() {
             <div>
               <Text type="secondary" style={{ fontSize: 12 }}>API Key</Text>
               <div style={{ fontSize: 13, fontFamily: "monospace", color: "#fa8c16" }}>
-                admin
+                {authKey}
               </div>
             </div>
           </div>
@@ -235,7 +249,7 @@ export default function DocsPage() {
             disabled={!selectedModel}
             style={{ borderRadius: 6, fontWeight: 500 }}
             onClick={() => {
-              const text = `url: ${apiBase}/v1\nmodelname: ${selectedModel}\nkey: admin`;
+              const text = `url: ${apiBase}/v1\nmodelname: ${selectedModel}\nkey: ${authKey}`;
               navigator.clipboard.writeText(text).then(() => {
                 message.success("连接信息已复制 ✅");
               });

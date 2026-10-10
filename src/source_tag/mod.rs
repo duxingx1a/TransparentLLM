@@ -24,6 +24,11 @@ pub fn parse_source_tag(user_agent: &str, x_source: &str) -> String {
     if ua_lower.contains("go-http-client") { return "go".to_string(); }
     if ua_lower.contains("node-fetch") || ua_lower.contains("node.js") { return "node".to_string(); }
 
+    // 未匹配到已知来源：直接透传 User-Agent 原文（支持任意自定义来源，不再一律 unknown）
+    let ua_trim = user_agent.trim().to_string();
+    if !ua_trim.is_empty() {
+        return ua_trim;
+    }
     "unknown".to_string()
 }
 

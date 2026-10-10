@@ -37,6 +37,8 @@ const sourceFaviconMap: Record<string, string> = {
   python: appPath("/favicons/python_org.png"),
   curl: appPath("/favicons/curl_se.png"),
   go: appPath("/favicons/go_dev.png"),
+  hermes: appPath("/favicons/hermes.svg"),
+  bookkeeping: appPath("/favicons/bookkeeping.png"),
 };
 
 function matchIcon(name: string, map: Record<string, string>): string | null {

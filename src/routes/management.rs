@@ -110,16 +110,8 @@ async fn list_models(
         return resp;
     }
     match crate::models::list_models(&state.db).await {
-        Ok(mut models) => {
-            // 如果 api_key 是占位符，替换为提供商的真实 key
-            // 模型的 Key 始终取自 provider（只读引用），展示 provider 的最新值
-            for model in &mut models {
-                if let Ok(Some(prov)) = crate::models::get_provider_by_name(
-                    &state.db, &model.provider,
-                ).await {
-                    model.api_key = prov.api_key.clone();
-                }
-            }
+        Ok(models) => {
+            // api_key 返回模型真实存储值（auto-from-provider 按字面返回，不再跟随提供商）
             Json(ModelListResponse { models }).into_response()
         }
         Err(e) => (

@@ -22,8 +22,27 @@ pub async fn run_migrations(db: &PgPool) -> anyhow::Result<()> {
             model_type          TEXT NOT NULL DEFAULT 'chat',
             upstream_model_name TEXT NOT NULL DEFAULT '',
             created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            CONSTRAINT uq_models_name_provider UNIQUE (model_name, provider)
         )
+        "#,
+    )
+    .execute(db)
+    .await?;
+
+    // 对已存在的表幂等补唯一约束（model_name + provider 唯一，防止同名同供应商重复）
+    sqlx::query(
+        r#"
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE conname = 'uq_models_name_provider'
+                  AND conrelid = 'models'::regclass
+            ) THEN
+                ALTER TABLE models ADD CONSTRAINT uq_models_name_provider UNIQUE (model_name, provider);
+            END IF;
+        END $$;
         "#,
     )
     .execute(db)
