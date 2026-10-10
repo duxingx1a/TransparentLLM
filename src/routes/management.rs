@@ -110,8 +110,22 @@ async fn list_models(
         return resp;
     }
     match crate::models::list_models(&state.db).await {
-        Ok(models) => {
-            // api_key 返回模型真实存储值（auto-from-provider 按字面返回，不再跟随提供商）
+        Ok(mut models) => {
+            // api_key 为 auto-from-provider / 空时，解析为其 provider 的真实 key 供前端展示
+            let provider_keys: std::collections::HashMap<String, String> =
+                crate::models::list_providers(&state.db)
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|p| (p.name, p.api_key))
+                    .collect();
+            for m in models.iter_mut() {
+                if m.api_key.is_empty() || m.api_key == "auto-from-provider" {
+                    if let Some(k) = provider_keys.get(&m.provider) {
+                        m.api_key = k.clone();
+                    }
+                }
+            }
             Json(ModelListResponse { models }).into_response()
         }
         Err(e) => (
